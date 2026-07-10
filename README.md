@@ -1,6 +1,6 @@
 # FEC
 
-Finding ECCDNA from long-read sequencing data.
+Finding ECCDNA(FEC) from long-read sequencing data.
 
 Author: Chia Hsuan(Josh) Fan
 
