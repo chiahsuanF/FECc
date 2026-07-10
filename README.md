@@ -66,8 +66,8 @@ export PATH=$PWD/fec/:$PATH
 | Option |  |Description| Required|
 |:---------|:-------------|:-------------|:-------------|
 |-h |--help|Show this help message and exit||
-|-b |--bam|[[STR] Input sorted bam, index required |True|
-|-o |--output_dir|[STR] Name of output directory|True|
+|-b |--bam|[STR] Input sorted bam, index required |True|
+|-o |--output_dir|[STR] Name of output directory. Default: fec_output|Fales|
 |-r |--reference_genome|[STR] Import reference chromosome genome|True|
 |-ms |--min_support|[INT] Minimum number of support reads for insertion reads|Fales|
 |-d |--depth|[FLOAT]Approximately total depth|Fales|
