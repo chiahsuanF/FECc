@@ -307,7 +307,7 @@ def refine_regions_by_highQ_breakpoints(regions, bps, outdir, sample, window=100
     return new_regs
 
 # -----------------------
-# 5. Build Junction Graph  // WRONG
+# 5. Build Junction Graph  
 # -----------------------
 def build_graph(regs, bps, amp_thresh, outdir, sample):
     t0 = tic("Building junction graph")
@@ -913,12 +913,12 @@ def build_cycle_fasta(filtered_cycles,
 # -----------------------
 if __name__=="__main__":
     p=argparse.ArgumentParser(description="Amplified-region → graph → cycles → POA pipeline")
-    p.add_argument("--bam", required=True)
-    p.add_argument("--output_dir", required=True)
-    p.add_argument("--reference_genome", required=True)
-    p.add_argument("--min_support", type=int)
-    p.add_argument("--depth", type=float)
-    p.add_argument("--threads", type=int, default=4, help="[INT] Number of CPU threads to use")
+    p.add_argument('-b',"--bam", required=True, type=str, help='[STR] Input sorted bam, index required')
+    p.add_argument('-o',"--output_dir", required=True, type=str, help='[STR] Name of output directory')
+    p.add_argument('-r',"--reference_genome", required=True, type=str, help='[STR] Import reference chromosome genome')
+    p.add_argument('-ms',"--min_support", type=int, help='[INT] Minimum number of support reads for insertion reads')
+    p.add_argument('-d',"--depth", type=float, help='[FLOAT]Approximately total depth')
+    p.add_argument('-t',"--threads", type=int, default=4, help="[INT] Number of CPU threads to use")
 
     args=p.parse_args()
 
