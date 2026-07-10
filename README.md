@@ -114,7 +114,7 @@ CTCTGACTATATGAGAGAAGAATTTGGACAAAAGATAATAAAGAAATCTTTGAGATAAGTTACCTGAAACTGCCAAGAAA
 ```
 
 
-### pipeline.log
+### login_not.txt
 ```
 2026-06-15 09:56:05,095 [INFO] Logger initialized
 2026-06-15 09:56:05,096 [INFO] Starting pipeline for sample index_aligned_human_hg38
