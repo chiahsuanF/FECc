@@ -1,4 +1,4 @@
-# FEC
+<img width="88" height="39" alt="image" src="https://github.com/user-attachments/assets/aadd060d-15bf-4621-9d25-f168e616e94b" /># FEC
 
 Finding ECCDNA(FEC) from long-read sequencing data.
 
@@ -17,7 +17,7 @@ cd fec/
 ```
 
 ```sh
-# Finding ECCDNA with indexed bam using requried functions. The reference using human hg38.
+# Finding ECCDNA with indexed bam using required functions. The reference using human hg38.
 ./fec_main.py -b <index.bam> -r <ref.fa>
 
 # Example usage:
