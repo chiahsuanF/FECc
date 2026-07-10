@@ -85,3 +85,6 @@ if __name__=="__main__":
     build_cycle_fasta( filtered, refined, args.reference_genome, args.output_dir, sample)
     
     logging.info("Pipeline completed successfully")
+
+    os.replace('07_merge.v4.1_filtered_cycles_coords.txt', 'summary.txt')
+    os.system('rm 0*.txt ')
