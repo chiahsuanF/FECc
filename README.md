@@ -17,7 +17,7 @@ cd fec/
 ```
 
 ```sh
-# Finding NUMTs with indexed bam. The reference using human hg38.
+# Finding ECCDNA with indexed bam. The reference using human hg38.
 ./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa>
 
 # Example usage:
@@ -25,11 +25,11 @@ cd fec/
 ```
 
 ```sh
-# Finding NUMTs with indexed bam. The reference using other species' chrM indexed by BWA.
+# Finding ECCDNA with indexed bam.
 ./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa> -ms <int> -d <flost> -t <int>
 
 # Example usage:
-./fec_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa -m 15 -d 30 -t 4
+./fec_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa -ms 15 -d 30 -t 4
 ```
 
 ## Description
