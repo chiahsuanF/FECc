@@ -13,23 +13,23 @@ git clone https://github.com/chiahsuanF/fec.git
 cd fec/
 ```
 ```
-./fnumts_main.py -h
+./fec_main.py -h
 ```
 
 ```sh
 # Finding NUMTs with indexed bam. The reference using human hg38.
-./fnumts_main.py -b <index.bam> -o <output_dir> -r <ref.fa>
+./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa>
 
 # Example usage:
-./fnumts_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa
+./fec_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa
 ```
 
 ```sh
 # Finding NUMTs with indexed bam. The reference using other species' chrM indexed by BWA.
-./fnumts_main.py -b <index.bam> -o <output_dir> -r <ref.fa> -ms <int> -d <flost> -t <int>
+./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa> -ms <int> -d <flost> -t <int>
 
 # Example usage:
-./fnumts_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa -m 15 -d 30 -t 4
+./fec_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa -m 15 -d 30 -t 4
 ```
 
 ## Description
@@ -40,7 +40,7 @@ Amplified-region → graph → cycles → POA pipeline
 The input file should be a long-read indexed BAM(PacBio Hifi and Oxford Nanopore) file. The output is a standard VCF file which passed filter. This program was test on a x86_64 Linux system with 40GB physical memory.
 
 ## Depencency
-Dependencies for fnumts:
+Dependencies for fec:
 
 * python3(version 3.10.9 or later)
 * pysam(version 0.22.0 or later)
@@ -59,7 +59,7 @@ git clone https://github.com/chiahsuanF/fec.git
 ```
 Next, add the directory to PATH:
 ```
-export PATH=$PWD/fnumts/:$PATH
+export PATH=$PWD/fec/:$PATH
 ```
 
 ## General usage
@@ -74,7 +74,7 @@ export PATH=$PWD/fnumts/:$PATH
 |-t |--threads|[INT] Number of CPU threads to use|Fales|
 
 ## Use cases
-fnumts required input as an aligned BAM file with header. Mapping raw data suggests using minimap2 and samtools. Input reference only needs reference chrM.fa, duplicated sequence and required indexed by using BWA.
+fec required input as an aligned BAM file with header. Mapping raw data suggests using minimap2 and samtools. Input reference only needs reference chrM.fa, duplicated sequence and required indexed by using BWA.
 
 ### Mapping long-read raw data with minimap2 and samtools:
 Download the reference FASTA file and sample's FASTQ file, then:
