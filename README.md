@@ -17,15 +17,15 @@ cd fec/
 ```
 
 ```sh
-# Finding ECCDNA with indexed bam. The reference using human hg38.
-./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa>
+# Finding ECCDNA with indexed bam using requried functions. The reference using human hg38.
+./fec_main.py -b <index.bam> -r <ref.fa>
 
 # Example usage:
-./fec_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa
+./fec_main.py -b index_aligned_human_hg38.bam -r hg38.fa
 ```
 
 ```sh
-# Finding ECCDNA with indexed bam.
+# Finding ECCDNA with indexed bam using full function.
 ./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa> -ms <int> -d <flost> -t <int>
 
 # Example usage:
