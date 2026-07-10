@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse, os, sys,logging
-
-from fec_login import *
-from fec_minisup import *
-from fec_amplified import *
-from fec_bpmq import *
-from fec_refine import *
-from fec_junctiongraph import *
-from fec_cycled import *
-from fec_filterc import *
-from fec_poa import *
-from fec_fa import *
-
+import fec_login, fec_minisup, fec_amplified, fec_bpmq, fec_refine, fec_junctiongraph, fec_cycled, fec_filterc, fec_poa, fec_fa
 
 # -----------------------
 # Main
