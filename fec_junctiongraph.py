@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 
-import os, logging, csv
+import os, logging, csv,time
 from collections import defaultdict
 from bisect import bisect_left, bisect_right
+from fec_login import *
 
 # -----------------------
 # 5. Build Junction Graph  
@@ -21,7 +22,7 @@ def build_graph(regs, bps, amp_thresh, outdir, sample):
         while lo<=hi:
             mid=(lo+hi)//2
             s,e,i = lst[mid]
-            if s<=pos<=e: return i
+            if s<=pos<=e: return i # if s<=pos<e: return i
             if pos < s: hi=mid-1
             else: lo=mid+1
         return None
@@ -35,6 +36,7 @@ def build_graph(regs, bps, amp_thresh, outdir, sample):
         edge_support[(i1,i2)].append((q, c1, b1, c2, b2))
 
     read_thr = max(2, int(amp_thresh/3))
+    #read_thr = 2
     fn = os.path.join(outdir, f"05_{sample}_graph_edges.txt")
     with open(fn,'w') as f:
         f.write("from\tto\tcount\treads_with_coords\n")
