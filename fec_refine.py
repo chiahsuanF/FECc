@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
-import os, logging, csv
+import os, logging, csv, time
 from collections import defaultdict
 from bisect import bisect_left, bisect_right
+from fec_login import *
 
 # -----------------------
 # 4. Refine Regions by High-Q Clusters // 
 # -----------------------
-def refine_regions_by_highQ_breakpoints(regions, bps, outdir, sample, window=1000):
+def refine_regions_by_highQ_breakpoints(regions, bps, outdir, sample, window=120000):
     t0 = tic("Refining regions by high-Q breakpoints")
     new_regs = []
     per_chr = defaultdict(list)
@@ -22,7 +23,7 @@ def refine_regions_by_highQ_breakpoints(regions, bps, outdir, sample, window=100
         while lo<=hi:
             mid=(lo+hi)//2
             s,e = lst[mid]
-            if s<=pos<=e: return (s,e)
+            if s<=pos< e: return (s,e) # if s<=pos<=e: return (s,e)
             if pos < s: hi=mid-1
             else: lo=mid+1
         return None
