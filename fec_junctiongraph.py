@@ -13,6 +13,40 @@ from fec_login import *
 MIN_SA_SUPPORT = 2
 MIN_SA_RATIO = 0.2
 
+
+def breakpoint_end(region_start, region_end, position):
+    """
+    Return which end of a region a breakpoint falls on.
+
+    Regions are cut at breakpoints upstream, so a junction sits at one
+    of a region's two boundaries. The nearer boundary is the end the
+    junction attaches to: "L" for the low-coordinate end, "R" for the
+    high-coordinate end.
+    """
+    if position - region_start <= region_end - position:
+        return "L"
+
+    return "R"
+
+
+def orientation_leaving(end):
+    """
+    Return the strand a region must be traversed in to leave by `end`.
+
+    Leaving through the high-coordinate end means the region was read
+    forward; leaving through the low-coordinate end means it was read
+    reverse-complemented.
+    """
+    return "+" if end == "R" else "-"
+
+
+def orientation_entering(end):
+    """
+    Return the strand a region must be traversed in to enter by `end`.
+    """
+    return "+" if end == "L" else "-"
+
+
 def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
     t0 = tic("Building junction graph")
     
@@ -52,7 +86,7 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
 
             start, end, idx = lst[mid]
 
-            if start <= pos <= end:
+            if start <= pos < end:
                 return idx
 
             if pos < start:
@@ -92,9 +126,27 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
 
         kept += 1
 
-        edge_key = (i1, strand1, i2, strand2)
+        # Orientation comes from which end of each region the breakpoint
+        # falls on, not from the read's alignment strand. A read strand
+        # only records the direction that one read happened to be
+        # sequenced in, so the same junction seen by a read from the
+        # other direction would otherwise be recorded as a different
+        # node pair.
+        end1 = breakpoint_end(regs[i1][1], regs[i1][2], b1)
+        end2 = breakpoint_end(regs[i2][1], regs[i2][2], b2)
 
-        edge_reads[edge_key].add(q)
+        leaving = (i1, orientation_leaving(end1))
+        entering = (i2, orientation_entering(end2))
+
+        # A circular molecule can be read from either direction, so the
+        # junction is recorded both ways round. The reverse form flips
+        # both orientations and swaps the two regions.
+        edge_reads[(leaving, entering)].add(q)
+
+        reverse_leaving = (i2, orientation_leaving(end2))
+        reverse_entering = (i1, orientation_entering(end1))
+
+        edge_reads[(reverse_leaving, reverse_entering)].add(q)
 
     logging.info(
         f"Processed {processed:,} breakpoints "
@@ -122,7 +174,7 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
             "from\tto\tcount\tdepth\tratio\n"
         )
 
-        for (i1, s1, i2, s2), sa_support in edge_support.items():
+        for ((i1, s1), (i2, s2)), sa_support in edge_support.items():
 
             if sa_support <= MIN_SA_SUPPORT:
                 continue
