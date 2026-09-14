@@ -3,6 +3,7 @@
 import  os,  logging,  pysam, csv
 from bisect import bisect_left, bisect_right
 from concurrent.futures import ThreadPoolExecutor
+from fec_login import *
 
 # -----------------------
 # 1. Depth & MinSupport
@@ -78,7 +79,7 @@ def estimate_depth_and_minsupp(bam_path, min_support, depth_override,
 
     # ---- output ----
     os.makedirs(outdir, exist_ok=True)
-    fn = os.path.join(outdir, f"01_{sample}_depth_minsupp.txt")
+    fn = os.path.join(outdir, f"{sample}_depth_minsupp.txt")
 
     with open(fn, "w") as f:
         f.write(f"Estimated Depth: {depth:.2f}\n")

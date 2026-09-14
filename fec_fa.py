@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
-import os, logging, pysam, csv
+import os, logging, pysam, csv, time
 from bisect import bisect_left, bisect_right
+from fec_login import *
+from fec_cycled import *
+from Bio.Seq import Seq
 
 # -----------------------
 # 9. Write cycle FASTA
@@ -42,12 +45,13 @@ def build_cycle_fasta(filtered_cycles,
             #
             # skip final repeated node
             #
-            for idx in cycle[:-1]:
-
-                chrom, start, end = regions[idx]
+            for node in cycle[:-1]:
+                idx = node[0]
+                strand = node[1]
+                chrom, start, end = regions[node[0]]
 
                 coords.append(
-                    f"{chrom}:{start}-{end}"
+                    f"{chrom}:{start}-{end}{strand}"
                 )
 
                 seq = ref.fetch(
@@ -55,6 +59,7 @@ def build_cycle_fasta(filtered_cycles,
                     start,
                     end
                 )
+                if strand == "-":seq = str(Seq(seq).reverse_complement())
 
                 seq_parts.append(seq)
 
@@ -65,12 +70,7 @@ def build_cycle_fasta(filtered_cycles,
 
             out.write(header + "\n")
 
-            out.write(
-                wrap_seq(
-                    "".join(seq_parts)
-                )
-                + "\n"
-            )
+            out.write("".join(seq_parts) + "\n")
 
     ref.close()
 

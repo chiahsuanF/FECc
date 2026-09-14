@@ -11,73 +11,132 @@ from fec_login import *
 # 6. Simple-cycle detection
 # -------------------------------------------------------
 
+
 def normalize_cycle(cycle):
-    nodes = list(cycle[:-1])
+    """
+    Canonicalize a cycle.
+
+    Removes:
+      1. rotation differences
+      2. reverse-direction differences
+      3. strand differences
+
+    Keeps only region IDs.
+    """
+
+    nodes = [node[0] for node in cycle[:-1]]
 
     if not nodes:
         return tuple()
 
-    # Forward orientation, rotated to its smallest node.
-    min_node = min(nodes)
-    min_index = nodes.index(min_node)
-    forward = nodes[min_index:] + nodes[:min_index]
+    n = len(nodes)
 
-    # Reverse orientation, also rotated to its smallest node.
-    reverse_nodes = list(reversed(nodes))
-    min_index = reverse_nodes.index(min_node)
-    backward = (
-        reverse_nodes[min_index:]
-        + reverse_nodes[:min_index]
-    )
+    representations = []
 
-    return tuple(min(forward, backward))
+    #
+    # forward rotations
+    #
+    for i in range(n):
+        representations.append(
+            tuple(nodes[i:] + nodes[:i])
+        )
+
+    #
+    # reverse rotations
+    #
+    rev = list(reversed(nodes))
+
+    for i in range(n):
+        representations.append(
+            tuple(rev[i:] + rev[:i])
+        )
+
+    return min(representations)
 
 
-def dfs_visit(start, node, graph, path, cycles):
+#MAX_CYCLE_LEN = 25 #20
+
+def dfs_visit(
+    start,
+    node,
+    graph,
+    path,
+    path_set,
+    path_segment_ids,
+    cycles,
+    max_cycle_len
+):
+
     path.append(node)
+    path_set.add(node)
+    path_segment_ids.add(node[0])
 
     for neighbor in graph.get(node, {}):
-        if neighbor == start and len(path) > 1:
-            cycles.append(path.copy() + [start])
 
-        elif neighbor not in path:
+        if neighbor == start and len(path) > 1: #1
+
+            full_cycle = path + [start]
+
+            key = normalize_cycle(
+                full_cycle
+            )
+            if key not in cycles:
+                cycles[key] = full_cycle
+
+        elif (
+            len(path) < max_cycle_len
+            and neighbor[0] not in path_segment_ids
+            #and neighbor >= start
+        ):
+
             dfs_visit(
                 start,
                 neighbor,
                 graph,
                 path,
-                cycles
+                path_set,
+                path_segment_ids,
+                cycles, max_cycle_len
             )
 
     path.pop()
+    path_set.remove(node)
+    path_segment_ids.remove(node[0])
 
 
-def find_cycles(graph, outdir, sample):
+def find_cycles(graph, outdir, sample, max_cycle_len=20):
+
     t0 = tic("Detecting cycles")
 
-    detected_cycles = []
+    logging.info(
+        f"Cycle graph: "
+        f"{len(graph):,} nodes, "
+        f"{sum(len(v) for v in graph.values()):,} edges"
+    )
 
-    for start_node in graph:
+    detected_cycles = {}
+    starts = [ n for n, nbrs in graph.items() if nbrs]
+
+    for i, start_node in enumerate(starts):
+
+        if i % 100 == 0:
+            logging.info(
+                f"Cycle search progress "
+                f"{i:,}/{len(starts):,}"
+            )
+
         dfs_visit(
             start_node,
             start_node,
             graph,
             [],
-            detected_cycles
+            set(),
+            set(),
+            detected_cycles, max_cycle_len
         )
 
-    unique_cycles = {}
+    cycles = list(detected_cycles.values())
 
-    for cycle in detected_cycles:
-        key = normalize_cycle(cycle)
-
-        if key and key not in unique_cycles:
-            normalized_nodes = list(key)
-            unique_cycles[key] = (
-                normalized_nodes + [normalized_nodes[0]]
-            )
-
-    cycles = list(unique_cycles.values())
 
     output_file = os.path.join(
         outdir,
@@ -85,41 +144,78 @@ def find_cycles(graph, outdir, sample):
     )
 
     with open(output_file, "w") as handle:
+
         handle.write("cycle_nodes\n")
 
         for cycle in cycles:
+
             handle.write(
                 ",".join(map(str, cycle)) + "\n"
             )
 
     logging.info(
-        "Wrote %d unique raw cycles -> %s",
-        len(cycles),
-        output_file
+        f"Wrote {len(cycles):,} unique raw cycles -> "
+        f"{output_file}"
     )
 
     toc(t0, "Detecting cycles")
 
     return cycles
 
+"""
+def normalize_cycle_strandless(cycle):
 
+    nodes = [node[0] for node in cycle[:-1]]
+
+    if not nodes:
+        return tuple()
+
+    n = len(nodes)
+
+    reps = []
+
+    for i in range(n):
+        reps.append(
+            tuple(nodes[i:] + nodes[:i])
+        )
+
+    rev = list(reversed(nodes))
+
+    for i in range(n):
+        reps.append(
+            tuple(rev[i:] + rev[:i])
+        )
+
+    return min(reps)
+"""
 # -------------------------------------------------------
 # Cycle and event sizes
 # -------------------------------------------------------
 
 def cycle_size(cycle, regions):
+    """
+    Return the total base-pair size of a simple cycle.
+
+    The final node is excluded because it repeats the first node.
+    """
     total_size = 0
 
     for node in cycle[:-1]:
-        chrom, start, end = regions[node]
+        node_id = node[0]
+        chrom, start, end = regions[node_id]
         total_size += end - start + 1
 
     return total_size
 
 
 def event_size(nodes, regions):
+    """
+    Return the total base-pair size of an eccDNA event.
+
+    Each region node is counted exactly once.
+    """
     return sum(
-        regions[node][2] - regions[node][1] + 1
+        regions[node[0]][2] - regions[node[0]][1] + 1
         for node in set(nodes)
     )
 
@@ -129,6 +225,7 @@ def event_size(nodes, regions):
 # -------------------------------------------------------
 
 def filter_maximal_cycles(cycles):
+
     if not cycles:
         return []
 
@@ -157,6 +254,7 @@ def filter_maximal_cycles(cycles):
 # -------------------------------------------------------
 
 def merge_overlapping_cycles(cycles):
+
     cycle_sets = [
         set(cycle[:-1])
         for cycle in cycles
@@ -187,7 +285,12 @@ def merge_overlapping_cycles(cycles):
 
     return merged_events
 
-def expand_events_with_attached_nodes( events, graph, max_hops=1, min_edge_support=1):
+def expand_events_with_attached_nodes(
+    events,
+    graph,
+    max_hops=1,
+    min_edge_support=1
+):
 
     expanded_events = []
 
@@ -258,6 +361,7 @@ def expand_events_with_attached_nodes( events, graph, max_hops=1, min_edge_suppo
 # -------------------------------------------------------
 
 def order_event_nodes(event_nodes, cycles):
+
     event_nodes = set(event_nodes)
     ordered_nodes = []
     seen = set()
@@ -283,9 +387,17 @@ def order_event_nodes(event_nodes, cycles):
 # -------------------------------------------------------
 # Write individual simple cycles
 # -------------------------------------------------------
-
-def write_cycles_with_coords( cycles, regions, outdir, sample, label):
-
+"""
+def write_cycles_with_coords(
+    cycles,
+    regions,
+    outdir,
+    sample,
+    label
+):
+    
+    #Write individual simple cycles with genomic coordinates.
+    
     maximal_cycles = filter_maximal_cycles(cycles)
 
     if label == "filtered":
@@ -312,9 +424,10 @@ def write_cycles_with_coords( cycles, regions, outdir, sample, label):
 
             path = ";".join(
                 (
-                    f"{regions[node][0]}:"
-                    f"{regions[node][1]}-"
-                    f"{regions[node][2]}"
+                    f"{regions[node[0]][0]}:"
+                    f"{regions[node[0]][1]}-"
+                    f"{regions[node[0]][2]}"
+                    f"{node[1]}"
                 )
                 for node in cycle
             )
@@ -332,14 +445,102 @@ def write_cycles_with_coords( cycles, regions, outdir, sample, label):
         label,
         output_file
     )
+"""
+def write_cycles_with_coords(
+    cycles,
+    regions,
+    outdir,
+    sample,
+    label
+):
+    """
+    Write simple cycles with genomic coordinates.
 
+    Raw output can be restricted to maximal cycles.
+    Filtered output preserves every quality-filtered cycle, including
+    valid two-region cycles that are subsets of larger cycles.
+    """
 
+    if label == "filtered":
+        output_cycles = cycles
+
+        output_file = os.path.join(
+            outdir,
+            "summary.txt"
+        )
+    else:
+        output_cycles = filter_maximal_cycles(cycles)
+
+        output_file = os.path.join(
+            outdir,
+            f"07_{sample}_{label}_cycles_coords.txt"
+        )
+
+    with open(output_file, "w") as handle:
+
+        handle.write(
+            "cycle_id\t"
+            "size\t"
+            "fragment_count\t"
+            "path\n"
+        )
+
+        for cycle_id, cycle in enumerate(
+            output_cycles,
+            start=1
+        ):
+            size = cycle_size(
+                cycle,
+                regions
+            )
+
+            path = ";".join(
+                (
+                    f"{regions[node[0]][0]}:"
+                    f"{regions[node[0]][1]}-"
+                    f"{regions[node[0]][2]}"
+                    f"{node[1]}"
+                )
+                for node in cycle
+            )
+
+            handle.write(
+                f"{cycle_id}\t"
+                f"{size}\t"
+                f"{len(cycle) - 1}\t"
+                f"{path}\n"
+            )
+
+    logging.info(
+        "Wrote %d %s simple cycles -> %s",
+        len(output_cycles),
+        label,
+        output_file
+    )
+
+    return output_cycles
 # -------------------------------------------------------
 # Write merged eccDNA events
 # -------------------------------------------------------
-def write_merged_eccdna_events( cycles, regions, graph, outdir, sample,
-    label,ninclude_attached=True, max_hops=1, min_edge_support=1):
 
+def write_merged_eccdna_events(
+    cycles,
+    regions,
+    graph,
+    outdir,
+    sample,
+    label,
+    include_attached=True,
+    max_hops=1,
+    min_edge_support=1
+):
+    """
+    Merge overlapping cycles into eccDNA events.
+
+    If include_attached=True, graph nodes directly connected to a
+    cyclic event are also included, even if those nodes are not part
+    of a simple cycle.
+    """
     events = merge_overlapping_cycles(cycles)
 
     if include_attached:
@@ -392,9 +593,10 @@ def write_merged_eccdna_events( cycles, regions, graph, outdir, sample,
             )
 
             coordinates = ";".join(
-                f"{regions[node][0]}:"
-                f"{regions[node][1]}-"
-                f"{regions[node][2]}"
+                f"{regions[node[0]][0]}:"
+                f"{regions[node[0]][1]}-"
+                f"{regions[node[0]][2]}"
+                f"{node[1]}"
                 for node in ordered_nodes
             )
 
@@ -418,6 +620,10 @@ def write_merged_eccdna_events( cycles, regions, graph, outdir, sample,
 # -------------------------------------------------------
 
 def log_cycle_diagnostics(cycles, regions, graph):
+    """
+    Log the coordinates in every cycle and report graph nodes that are
+    not included in any detected cycle.
+    """
     cyclic_nodes = set()
 
     for cycle_id, cycle in enumerate(cycles, start=1):
@@ -426,9 +632,10 @@ def log_cycle_diagnostics(cycles, regions, graph):
 
         coordinates = [
             (
-                f"{regions[node][0]}:"
-                f"{regions[node][1]}-"
-                f"{regions[node][2]}"
+                f"{regions[node[0]][0]}:"
+                f"{regions[node[0]][1]}-"
+                f"{regions[node[0]][2]}"
+                f"{node[1]}"
             )
             for node in nodes
         ]
@@ -455,14 +662,15 @@ def log_cycle_diagnostics(cycles, regions, graph):
     )
 
     for node in sorted(noncyclic_nodes):
-        if node < 0 or node >= len(regions):
+        node_id = node[0]
+        if node_id < 0 or node_id >= len(regions):
             logging.warning(
                 "Graph node %s is outside the regions array",
                 node
             )
             continue
 
-        chrom, start, end = regions[node]
+        chrom, start, end = regions[node_id]
 
         logging.info(
             "Non-cyclic node %s: %s:%s-%s; neighbors=%s",

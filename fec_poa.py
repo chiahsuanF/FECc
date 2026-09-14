@@ -1,27 +1,43 @@
 #!/usr/bin/env python3
 
-import os, logging, subprocess, pysam, csv
+import os, logging, subprocess, pysam, csv, time
 from bisect import bisect_left, bisect_right
 from concurrent.futures import ThreadPoolExecutor
+from fec_login import *
 
 # -----------------------
 # 8. POA & Refined Connections
 # -----------------------
 def build_unique_junctions(cycles, regs):
-    """
-    Convert cycles → unique junctions (deduplicates POA calls)
-    """
+
     junctions = set()
 
     for cyc in cycles:
-        coords = [regs[i] for i in cyc]
+
+        coords = [
+            (
+                regs[node[0]][0],   # chrom
+                regs[node[0]][1],   # start
+                regs[node[0]][2],   # end
+                node[1]             # strand
+            )
+            for node in cyc
+        ]
 
         for j in range(len(coords) - 1):
-            c1, s1, _ = coords[j]
-            c2, s2, _ = coords[j + 1]
 
-            # canonical key (direction-aware)
-            key = (c1, s1, c2, s2)
+            c1, s1, e1, strand1 = coords[j]
+            c2, s2, e2, strand2 = coords[j + 1]
+
+            key = (
+                c1,
+                s1,
+                strand1,
+                c2,
+                s2,
+                strand2
+            )
+
             junctions.add(key)
 
     return list(junctions)
@@ -88,7 +104,7 @@ def process_junctions_fast(junctions, bam_path, ref, outdir, threads=8):
 
         jid, junction = item
 
-        c1, s1, c2, s2 = junction
+        c1, s1, strand1, c2, s2, strand2 = junction
 
         logging.info(
             f"Junction {jid}: {c1}:{s1} -> {c2}:{s2}"
@@ -109,7 +125,9 @@ def process_junctions_fast(junctions, bam_path, ref, outdir, threads=8):
 
         if len(reads) < 5:
             logging.info(
-                f"Junction {jid}: skipped (<5 reads)"
+                f"Junction {jid}: "
+                f"{c1}:{s1}{strand1} -> "
+                f"{c2}:{s2}{strand2}"
             )
             return None
 
@@ -314,9 +332,19 @@ def process_all_connections(bam_path, ref, regs, cycles, outdir, sample):
     with open(fn,'w') as out:
         out.write("junction\treads_support\n")
         for cid,cyc in enumerate(cycles):
-            coords=[regs[i] for i in cyc]
+            coords = [
+                (
+                    regs[node[0]][0],
+                    regs[node[0]][1],
+                    regs[node[0]][2],
+                    node[1]
+                )
+                for node in cyc
+            ]
             for j in range(len(coords)-1):
-                c1,s1,_=coords[j]; c2,s2,_=coords[j+1]
+                c1, s1, e1, strand1 = coords[j]
+                c2, s2, e2, strand2 = coords[j+1]
+                #c1,s1,_=coords[j]; c2,s2,_=coords[j+1]
                 reads=extract_reads_for_poa(bam_path,c1,s1)+extract_reads_for_poa(bam_path,c2,s2)
                 if not reads: continue
                 prefix=os.path.join(ws,f"cycle{cid}_edge{j}")
