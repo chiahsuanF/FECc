@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import logging
 
 from fec_login import *
@@ -54,21 +53,17 @@ def normalize_cycle(cycle):
     return min(representations)
 
 
-#MAX_CYCLE_LEN = 25 #20
-
 def dfs_visit(
     start,
     node,
     graph,
     path,
-    path_set,
     path_segment_ids,
     cycles,
     max_cycle_len
 ):
 
     path.append(node)
-    path_set.add(node)
     path_segment_ids.add(node[0])
 
     for neighbor in graph.get(node, {}):
@@ -94,13 +89,11 @@ def dfs_visit(
                 neighbor,
                 graph,
                 path,
-                path_set,
                 path_segment_ids,
                 cycles, max_cycle_len
             )
 
     path.pop()
-    path_set.remove(node)
     path_segment_ids.remove(node[0])
 
 
@@ -130,7 +123,6 @@ def find_cycles(graph, outdir, sample, max_cycle_len=20):
             start_node,
             graph,
             [],
-            set(),
             set(),
             detected_cycles, max_cycle_len
         )
@@ -162,32 +154,6 @@ def find_cycles(graph, outdir, sample, max_cycle_len=20):
 
     return cycles
 
-"""
-def normalize_cycle_strandless(cycle):
-
-    nodes = [node[0] for node in cycle[:-1]]
-
-    if not nodes:
-        return tuple()
-
-    n = len(nodes)
-
-    reps = []
-
-    for i in range(n):
-        reps.append(
-            tuple(nodes[i:] + nodes[:i])
-        )
-
-    rev = list(reversed(nodes))
-
-    for i in range(n):
-        reps.append(
-            tuple(rev[i:] + rev[:i])
-        )
-
-    return min(reps)
-"""
 # -------------------------------------------------------
 # Cycle and event sizes
 # -------------------------------------------------------
@@ -387,65 +353,6 @@ def order_event_nodes(event_nodes, cycles):
 # -------------------------------------------------------
 # Write individual simple cycles
 # -------------------------------------------------------
-"""
-def write_cycles_with_coords(
-    cycles,
-    regions,
-    outdir,
-    sample,
-    label
-):
-    
-    #Write individual simple cycles with genomic coordinates.
-    
-    maximal_cycles = filter_maximal_cycles(cycles)
-
-    if label == "filtered":
-        output_file = os.path.join(
-            outdir,
-            "summary.txt"
-        )
-    else:
-        output_file = os.path.join(
-            outdir,
-            f"07_{sample}_{label}_cycles_coords.txt"
-        )
-
-    with open(output_file, "w") as handle:
-        handle.write(
-            "cycle_id\tsize\tfragment_count\tpath\n"
-        )
-
-        for cycle_id, cycle in enumerate(
-            maximal_cycles,
-            start=1
-        ):
-            size = cycle_size(cycle, regions)
-
-            path = ";".join(
-                (
-                    f"{regions[node[0]][0]}:"
-                    f"{regions[node[0]][1]}-"
-                    f"{regions[node[0]][2]}"
-                    f"{node[1]}"
-                )
-                for node in cycle
-            )
-
-            handle.write(
-                f"{cycle_id}\t"
-                f"{size}\t"
-                f"{len(cycle) - 1}\t"
-                f"{path}\n"
-            )
-
-    logging.info(
-        "Wrote %d %s simple cycles -> %s",
-        len(maximal_cycles),
-        label,
-        output_file
-    )
-"""
 def write_cycles_with_coords(
     cycles,
     regions,

@@ -13,7 +13,7 @@ from fec_login import *
 MIN_SA_SUPPORT = 2
 MIN_SA_RATIO = 0.2
 
-def build_graph( regs, bps, amp_thresh, outdir, sample, global_depth, min_mq=30):
+def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
     t0 = tic("Building junction graph")
     
     if global_depth <= 0:
@@ -107,11 +107,6 @@ def build_graph( regs, bps, amp_thresh, outdir, sample, global_depth, min_mq=30)
     }
 
     # -----------------------------------
-    # threshold
-    # -----------------------------------
-    #read_thr = max(2, int(amp_thresh / 3))
-
-    # -----------------------------------
     # write edges
     # -----------------------------------
     fn = os.path.join(
@@ -154,7 +149,3 @@ def build_graph( regs, bps, amp_thresh, outdir, sample, global_depth, min_mq=30)
     toc(t0, "Building junction graph")
 
     return graph
-
-    # -----------------------------------
-    # final graph
-    # -----------------------------------

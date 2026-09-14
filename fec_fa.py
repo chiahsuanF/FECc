@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import os, logging, pysam, csv, time
-from bisect import bisect_left, bisect_right
+import os, logging, pysam
 from fec_login import *
 from fec_cycled import *
 from Bio.Seq import Seq
@@ -9,12 +8,6 @@ from Bio.Seq import Seq
 # -----------------------
 # 9. Write cycle FASTA
 # -----------------------
-
-def wrap_seq(seq, width=80):
-    return "\n".join(
-        seq[i:i+width]
-        for i in range(0, len(seq), width)
-    )
 
 
 def build_cycle_fasta(filtered_cycles,
@@ -29,7 +22,7 @@ def build_cycle_fasta(filtered_cycles,
 
     outfile = os.path.join(
         outdir,
-        f"summary.fa"
+        "summary.fa"
     )
 
     with open(outfile, "w") as out:
@@ -46,7 +39,6 @@ def build_cycle_fasta(filtered_cycles,
             # skip final repeated node
             #
             for node in cycle[:-1]:
-                idx = node[0]
                 strand = node[1]
                 chrom, start, end = regions[node[0]]
 

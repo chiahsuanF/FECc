@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import os, logging, pysam, csv, time
-from bisect import bisect_left, bisect_right
+import os, logging, pysam
 from fec_login import *
 
 # -----------------------

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 
-import  os,  logging,  pysam, csv
-from bisect import bisect_left, bisect_right
+import os, logging, pysam
 from concurrent.futures import ThreadPoolExecutor
-from fec_login import *
 
 # -----------------------
 # 1. Depth & MinSupport

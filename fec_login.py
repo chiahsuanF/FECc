@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import  os, time, logging
-from bisect import bisect_left, bisect_right
+import os, time, logging
 
 
 # -----------------------

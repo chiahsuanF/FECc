@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import argparse, os, sys, random, logging,  pysam, csv, time
-from bisect import bisect_left, bisect_right
+import os, sys, random, logging, pysam
 import numpy as np
 from fec_login import *
 

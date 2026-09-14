@@ -62,15 +62,9 @@ if __name__=="__main__":
     refined = refine_regions_by_highQ_breakpoints( merged, bps, args.output_dir, sample, window=200000) #120,000
 
     # 5) Build Junction Graph
-    graph = build_graph(refined, bps, amp_thresh, args.output_dir, sample, depth)
+    graph = build_graph(refined, bps, args.output_dir, sample, depth)
     
     # 6) Detect cycles & write raw coords
-    """    
-    raw_cycles = find_cycles( graph, args.output_dir, sample)
-    write_cycles_with_coords(raw_cycles, refined, args.output_dir, sample, "raw")
-    if not raw_cycles:
-        logging.error("No cycles detected; exiting"); sys.exit(1)
-    """    
     raw_cycles = find_cycles( graph, args.output_dir, sample, max_cycle_len=args.max_cycle_len)
     if not raw_cycles:
         logging.error("No cycles detected; exiting")
@@ -105,7 +99,6 @@ if __name__=="__main__":
     
     summary_file = os.path.join( args.output_dir, "summary.txt")
     bigcycle_file = os.path.join( args.output_dir, "summary_bigcycle.txt")
-    #merge_small_cycles( summary_file, bigcycle_file)
     merge_small_cycles(
     summary_file=summary_file,
     outfile=bigcycle_file,
@@ -130,6 +123,3 @@ if __name__=="__main__":
     build_cycle_fasta( filtered, refined, args.reference_genome, args.output_dir, sample)
     
     logging.info("Pipeline completed successfully")
-    
-    
-    #os.system('rm 0*.txt')
