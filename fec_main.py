@@ -29,6 +29,8 @@ if __name__=="__main__":
     p.add_argument('-d',"--depth", type=float, help='[FLOAT]Approximately total depth')
     p.add_argument('-t',"--threads", type=int, default=4, help="[INT] Number of CPU threads to use")
     p.add_argument('-mc',"--max_cycle_len", type=int, default=20, help="[INT] Maximum number of fragments allowed in each eccDNA cycle")
+    p.add_argument('-ct',"--copy_tolerance", type=int, default=0, help="[INT] Extra region traversals allowed beyond the depth-estimated copy number")
+    p.add_argument("--require_depth_support", action="store_true", help="Drop big cycles whose region usage exceeds the depth-estimated copy number, instead of only marking them")
 
     args=p.parse_args()
 
@@ -105,8 +107,8 @@ if __name__=="__main__":
     bam_path=args.bam,
     baseline_depth=depth,
     min_mapping_quality=0,
-    copy_tolerance=0,
-    require_depth_support=False
+    copy_tolerance=args.copy_tolerance,
+    require_depth_support=args.require_depth_support
 )
     bigcycle_plot_dir = os.path.join(
     args.output_dir,

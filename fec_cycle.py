@@ -35,183 +35,365 @@ def strandless_node(node):
     return node
 
 
-def remove_one(values, target):
+# ---------------------------------------------------------------
+# Segment-end breakpoint graph
+# ---------------------------------------------------------------
+#
+# A segment is a strandless genomic region with two ends, L and R, in
+# reference orientation. Traversing it as "+" enters L and exits R;
+# traversing as "-" enters R and exits L.
+#
+# A junction is the unordered pair of segment ends that a split read
+# joins. Because the pair is unordered, the same physical junction
+# canonicalizes identically regardless of which direction a cycle
+# happens to traverse it: A+ -> B+ and B- -> A- both yield
+# {(A, R), (B, L)}. That is what lets one molecule contain a segment in
+# both orientations, which is what an inversion is.
+
+LEFT = "L"
+RIGHT = "R"
+
+
+def split_strand(node):
     """
-    Remove one occurrence of target from a list.
+    Split a strand-aware node into its region and strand.
 
-    Returns True if an occurrence was removed.
+    Example:
+        chr2:100-200+ -> ("chr2:100-200", "+")
     """
-    try:
-        values.remove(target)
-        return True
-    except ValueError:
-        return False
+    if node.endswith("+") or node.endswith("-"):
+        return node[:-1], node[-1]
+
+    return node, "+"
 
 
-def remove_leaf_nodes(graph):
+def entry_end(strand):
+    """Return the end a segment is entered through."""
+    return LEFT if strand == "+" else RIGHT
+
+
+def exit_end(strand):
+    """Return the end a segment is left through."""
+    return RIGHT if strand == "+" else LEFT
+
+
+def cycle_junctions(nodes):
     """
-    Iteratively remove nodes with degree zero or one.
+    Convert a closed cycle path into its canonical junctions.
 
-    The graph is an undirected multigraph represented by adjacency
-    lists. Duplicate neighbors represent repeated edges.
+    Each junction is a sorted pair of (region, end) tuples.
     """
-    while True:
-        leaves = [
-            node
-            for node, neighbors in graph.items()
-            if len(neighbors) <= 1
-        ]
+    junctions = []
 
-        if not leaves:
-            break
+    for position in range(len(nodes) - 1):
+        left_region, left_strand = split_strand(nodes[position])
+        right_region, right_strand = split_strand(nodes[position + 1])
 
-        for leaf in leaves:
-            if leaf not in graph:
-                continue
-
-            neighbors = list(graph[leaf])
-
-            for neighbor in neighbors:
-                if neighbor in graph:
-                    remove_one(graph[neighbor], leaf)
-
-            del graph[leaf]
-
-    return graph
-
-
-def graph_has_edges(graph):
-    """
-    Return True if the graph contains at least one edge.
-    """
-    return any(neighbors for neighbors in graph.values())
-
-
-def euler_walk(graph):
-    """
-    Run Hierholzer's algorithm on an undirected multigraph.
-
-    Duplicate edges are retained, so the resulting walk may revisit
-    the same region multiple times.
-
-    Returns:
-        Ordered node list. For an Eulerian cycle, the first and final
-        nodes are identical.
-    """
-    work_graph = {
-        node: list(neighbors)
-        for node, neighbors in graph.items()
-    }
-
-    if not graph_has_edges(work_graph):
-        return []
-
-    # Prefer a node with odd degree for an Eulerian path.
-    # If all degrees are even, this is an Eulerian cycle and any node
-    # with an edge can be used.
-    odd_nodes = [
-        node
-        for node, neighbors in work_graph.items()
-        if len(neighbors) % 2 == 1
-    ]
-
-    if odd_nodes:
-        start = sorted(odd_nodes)[0]
-    else:
-        start = sorted(
-            node
-            for node, neighbors in work_graph.items()
-            if neighbors
-        )[0]
-
-    stack = [start]
-    walk = []
-
-    while stack:
-        current = stack[-1]
-
-        if work_graph.get(current):
-            neighbor = work_graph[current].pop()
-
-            # Remove the matching reverse copy of this undirected edge.
-            if neighbor not in work_graph:
-                logging.warning(
-                    "Missing graph node while traversing edge %s -> %s",
-                    current,
-                    neighbor
-                )
-                continue
-
-            if not remove_one(work_graph[neighbor], current):
-                logging.warning(
-                    "Missing reverse edge while traversing %s -> %s",
-                    current,
-                    neighbor
-                )
-                continue
-
-            stack.append(neighbor)
-
-        else:
-            walk.append(stack.pop())
-
-    walk.reverse()
-
-    # Confirm that every edge in this connected graph was consumed.
-    remaining_edges = sum(
-        len(neighbors)
-        for neighbors in work_graph.values()
-    )
-
-    if remaining_edges:
-        logging.warning(
-            "Euler traversal left %d adjacency entries unused",
-            remaining_edges
+        junctions.append(
+            tuple(sorted((
+                (left_region, exit_end(left_strand)),
+                (right_region, entry_end(right_strand))
+            )))
         )
 
-    return walk
+    return junctions
 
 
-def connected_edge_components(graph):
+def build_junction_groups(cycles):
     """
-    Split a graph into connected components containing edges.
+    Group small cycles that share at least one junction.
 
-    This protects against a strandless cycle group containing multiple
-    disconnected strand-aware subgraphs.
+    A shared junction is direct read evidence that two cycles describe
+    the same molecule. A merely shared region is not: two independent
+    ecDNA species can both contain the same amplified region without
+    being the same molecule.
     """
-    components = []
-    visited = set()
+    junction_owners = defaultdict(set)
 
-    for start in sorted(graph):
+    for index, cycle in enumerate(cycles):
+        for junction in cycle["junctions"]:
+            junction_owners[junction].add(index)
 
-        if start in visited or not graph[start]: continue
+    parent = list(range(len(cycles)))
 
-        component_nodes = set()
-        stack = [start]
-        visited.add(start)
+    def find(index):
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left, right):
+        left_root = find(left)
+        right_root = find(right)
+
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for owners in junction_owners.values():
+        ordered = sorted(owners)
+
+        for other in ordered[1:]:
+            union(ordered[0], other)
+
+    groups = defaultdict(list)
+
+    for index in range(len(cycles)):
+        groups[find(index)].append(index)
+
+    return [members for _, members in sorted(groups.items())]
 
 
-        while stack:
-            node = stack.pop()
-            component_nodes.add(node)
+def junction_multiplicities(cycles, group):
+    """
+    Count how many times each junction is used by a group of cycles.
 
-            for neighbor in graph.get(node, []):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    stack.append(neighbor)
+    A junction listed by two different cycles describes one adjacency,
+    not two, so counts are taken as the highest per-cycle count rather
+    than summed. A cycle that genuinely uses a junction twice still
+    contributes two.
+    """
+    counts = {}
 
-        component_graph = defaultdict(list)
+    for index in group:
+        for junction, count in Counter(cycles[index]["junctions"]).items():
+            counts[junction] = max(counts.get(junction, 0), count)
 
-        for node in component_nodes:
-            component_graph[node] = [
-                neighbor
-                for neighbor in graph.get(node, [])
-                if neighbor in component_nodes
-            ]
+    return counts
 
-        components.append(component_graph)
 
-    return components
+def segment_multiplicities(junction_counts):
+    """
+    Derive how many times each segment must be traversed.
+
+    A closed molecule alternates segment and junction, so a segment's
+    traversal count equals the junction count at each of its two ends.
+
+    Returns:
+        multiplicities  region -> traversal count
+        imbalances      (region, left_count, right_count) for segments
+                        whose ends disagree, which no single molecule
+                        can explain
+    """
+    incidence = defaultdict(int)
+
+    for (end_a, end_b), count in junction_counts.items():
+        incidence[end_a] += count
+        incidence[end_b] += count
+
+    multiplicities = {}
+    imbalances = []
+
+    for region in sorted({region for region, _ in incidence}):
+        left = incidence.get((region, LEFT), 0)
+        right = incidence.get((region, RIGHT), 0)
+
+        if left != right:
+            imbalances.append((region, left, right))
+        else:
+            multiplicities[region] = left
+
+    return multiplicities, imbalances
+
+
+def opposite_end(end):
+    """Return the other end of the same segment."""
+    return RIGHT if end == LEFT else LEFT
+
+
+def build_junction_uses(junction_counts):
+    """
+    Expand junction multiplicities into individual uses.
+
+    Returns:
+        uses    use_id -> (end_a, end_b)
+        slots   segment end -> list of use_ids arriving there
+    """
+    uses = []
+    slots = defaultdict(list)
+
+    for (end_a, end_b), count in sorted(junction_counts.items()):
+        for _ in range(count):
+            use_id = len(uses)
+            uses.append((end_a, end_b))
+            slots[end_a].append(use_id)
+            slots[end_b].append(use_id)
+
+    return uses, slots
+
+
+def other_endpoint(uses, use_id, end):
+    """Return the end at the far side of a junction use."""
+    end_a, end_b = uses[use_id]
+
+    return end_b if end_a == end else end_a
+
+
+def initial_transitions(slots, multiplicities):
+    """
+    Pair every left-end slot of a segment with a right-end slot.
+
+    Each pair is one traversal of that segment: it says which junction
+    use the walk leaves by, having arrived on the other one. Any pairing
+    is a valid starting point; merge_transition_walks then re-pairs to
+    splice separate walks together.
+    """
+    transitions = {}
+
+    for region in sorted(multiplicities):
+        left_slots = slots.get((region, LEFT), [])
+        right_slots = slots.get((region, RIGHT), [])
+
+        if len(left_slots) != len(right_slots):
+            return None
+
+        for left_use, right_use in zip(left_slots, right_slots):
+            transitions[(region, left_use)] = right_use
+            transitions[(region, right_use)] = left_use
+
+    return transitions
+
+
+def decompose_transition_walks(uses, transitions):
+    """
+    Split every junction use into closed alternating walks.
+
+    The walk arrives at a segment end along one junction use, traverses
+    that segment to its far end, and leaves along the use the transition
+    system pairs it with. A junction use is crossed once no matter which
+    of its two ends the walk happens to enter from, so consumption is
+    tracked per use: entering from the other end would only retrace the
+    same molecule in reverse.
+
+    Returns a list of walks, each a list of
+    (region, strand, left_use, right_use) traversals.
+    """
+    walks = []
+    consumed = set()
+
+    for start_use in range(len(uses)):
+        if start_use in consumed:
+            continue
+
+        walk = []
+        use_id = start_use
+        end = uses[start_use][0]
+
+        while use_id not in consumed:
+            consumed.add(use_id)
+
+            region, arrival = end
+            exit_use = transitions.get((region, use_id))
+
+            if exit_use is None:
+                return None
+
+            walk.append((
+                region,
+                "+" if arrival == LEFT else "-",
+                use_id if arrival == LEFT else exit_use,
+                exit_use if arrival == LEFT else use_id
+            ))
+
+            end = other_endpoint(
+                uses,
+                exit_use,
+                (region, opposite_end(arrival))
+            )
+
+            use_id = exit_use
+
+        if walk:
+            walks.append(walk)
+
+    return walks
+
+
+def merge_transition_walks(uses, transitions):
+    """
+    Re-pair transitions until every junction use lies on one walk.
+
+    Two walks that both traverse the same segment are spliced by
+    swapping that segment's pairing, which is the constructive half of
+    Kotzig's theorem. Each splice removes one walk, so this terminates.
+
+    Returns the single remaining walk, or None when the segment ends
+    cannot be joined into one molecule.
+    """
+    while True:
+        walks = decompose_transition_walks(uses, transitions)
+
+        if walks is None:
+            return None
+
+        if len(walks) <= 1:
+            return walks[0] if walks else None
+
+        owners = defaultdict(list)
+
+        for index, walk in enumerate(walks):
+            for region, _, left_use, right_use in walk:
+                owners[region].append((index, left_use, right_use))
+
+        spliced = False
+
+        for region in sorted(owners):
+            entries = owners[region]
+            first_index = entries[0][0]
+
+            other = next(
+                (entry for entry in entries if entry[0] != first_index),
+                None
+            )
+
+            if other is None:
+                continue
+
+            _, left_a, right_a = entries[0]
+            _, left_b, right_b = other
+
+            transitions[(region, left_a)] = right_b
+            transitions[(region, right_b)] = left_a
+            transitions[(region, left_b)] = right_a
+            transitions[(region, right_a)] = left_b
+
+            spliced = True
+            break
+
+        if not spliced:
+            # No segment is shared, so the walks are genuinely separate
+            # molecules rather than one.
+            return None
+
+
+def reconstruct_big_cycle(junction_counts, multiplicities):
+    """
+    Reconstruct one closed molecule from a group's junctions.
+
+    Returns strand-aware region tokens with the first token repeated to
+    mark the closure, or [] when the junctions cannot form a single
+    molecule.
+    """
+    if not junction_counts or not multiplicities:
+        return []
+
+    uses, slots = build_junction_uses(junction_counts)
+
+    transitions = initial_transitions(slots, multiplicities)
+
+    if transitions is None:
+        return []
+
+    walk = merge_transition_walks(uses, transitions)
+
+    if not walk:
+        return []
+
+    if len(walk) != len(uses):
+        return []
+
+    path = [region + strand for region, strand, _, _ in walk]
+
+    return path + [path[0]]
 
 
 def path_size(path):
@@ -518,56 +700,11 @@ def load_cycles(summary_file):
                 "size": cycle_size_value,
                 "frag_count": fragment_count,
                 "path": fields[3],
-                "nodes": nodes
+                "nodes": nodes,
+                "junctions": cycle_junctions(nodes)
             })
 
     return cycles
-
-
-def build_cycle_groups(cycles):
-    """
-    Group small cycles when they share at least one genomic region.
-
-    Strand is ignored only when deciding which cycles belong to the
-    same event.
-    """
-    node_sets = [
-        {
-            strandless_node(node)
-            for node in cycle["nodes"][:-1]
-        }
-        for cycle in cycles
-    ]
-
-    groups = []
-    assigned = set()
-
-    for index in range(len(cycles)):
-        if index in assigned:
-            continue
-
-        component = {index}
-        stack = [index]
-
-        while stack:
-            current = stack.pop()
-
-            for other in range(len(cycles)):
-                if other in component:
-                    continue
-
-                if node_sets[current].intersection(
-                    node_sets[other]
-                ):
-                    component.add(other)
-                    stack.append(other)
-
-        assigned.update(component)
-        groups.append(
-            sorted(component)
-        )
-
-    return groups
 
 
 def format_region_values(
@@ -627,18 +764,21 @@ def merge_small_cycles(
     require_depth_support=False
 ):
     """
-    Merge overlapping small cycles and construct strand-aware Euler
-    walks.
+    Reconstruct big ecDNA cycles from the small cycles in summary.txt.
 
-    Region depth is calculated from the BAM file. The number of times
-    each genomic region occurs in the Euler walk is compared with its
-    depth-estimated copy number.
+    Small cycles are grouped only when they share a junction, which is
+    direct read evidence that they describe the same molecule. Each
+    group is resolved on a segment-end breakpoint graph, so a single
+    molecule may traverse a segment in both orientations.
 
-    If require_depth_support=False, all reconstructed cycles are
-    written and marked as depth-consistent or depth-inconsistent.
+    A group whose segment ends do not balance cannot be explained by one
+    molecule - typically two species sharing a junction - so its member
+    cycles are reported individually instead of being fused.
 
-    If require_depth_support=True, depth-inconsistent cycles are
-    omitted.
+    Region depth is calculated from the BAM file and compared with how
+    often each region is traversed. With require_depth_support=False
+    every reconstruction is written and marked depth-consistent or not;
+    with True, depth-inconsistent reconstructions are omitted.
     """
     if baseline_depth <= 0:
         raise ValueError(
@@ -682,12 +822,81 @@ def merge_small_cycles(
         )
     )
 
-    groups = build_cycle_groups(
+    groups = build_junction_groups(
         cycles
     )
 
+    logging.info(
+        "Grouped %d small cycles into %d junction-linked group(s)",
+        len(cycles),
+        len(groups)
+    )
+
     output_records = []
-    bigcycle_id = 1
+
+    def add_record(walk, source_ids):
+        """Depth-check one reconstruction and queue it for output."""
+        valid, occurrences, violations = validate_walk_depth(
+            walk=walk,
+            copy_numbers=copy_numbers,
+            copy_tolerance=copy_tolerance
+        )
+
+        if require_depth_support and not valid:
+            logging.warning(
+                "Skipping depth-inconsistent cycle from %s: %s",
+                ",".join(source_ids),
+                violations
+            )
+            return
+
+        used_regions = sorted(occurrences)
+
+        output_records.append({
+            "bigcycle_id": len(output_records) + 1,
+            "source_cycles": ",".join(source_ids),
+            "total_size": path_size(walk),
+            "fragment_count": (
+                len(walk) - 1
+                if walk[0] == walk[-1]
+                else len(walk)
+            ),
+            "depth_consistent": "yes" if valid else "no",
+            "region_depths": format_region_values(
+                used_regions,
+                region_depths,
+                numeric_format="{:.2f}"
+            ),
+            "region_copy_numbers": format_region_values(
+                used_regions,
+                copy_numbers
+            ),
+            "region_occurrences": format_region_values(
+                used_regions,
+                occurrences
+            ),
+            "depth_violations": format_violations(violations),
+            "path": " -> ".join(walk)
+        })
+
+    def add_members_individually(group, reason):
+        """
+        Report a group's cycles separately.
+
+        Used when a group cannot be explained by one molecule, so the
+        evidence is still reported rather than dropped.
+        """
+        logging.info(
+            "Reporting cycles %s individually: %s",
+            ",".join(cycles[index]["id"] for index in group),
+            reason
+        )
+
+        for index in group:
+            add_record(
+                cycles[index]["nodes"],
+                [cycles[index]["id"]]
+            )
 
     for group in groups:
         source_ids = [
@@ -695,136 +904,45 @@ def merge_small_cycles(
             for index in group
         ]
 
-        graph = defaultdict(list)
+        if len(group) == 1:
+            add_record(cycles[group[0]]["nodes"], source_ids)
+            continue
 
-        # Add every edge from every small cycle. Duplicate edges are
-        # retained and can therefore cause repeated traversal.
-        for index in group:
-            nodes = cycles[index]["nodes"]
+        junction_counts = junction_multiplicities(cycles, group)
 
-            for position in range(
-                len(nodes) - 1
-            ):
-                left = nodes[position]
-                right = nodes[position + 1]
-
-                if left == right:
-                    continue
-
-                graph[left].append(right)
-                graph[right].append(left)
-
-        graph = remove_leaf_nodes(
-            graph
+        multiplicities, imbalances = segment_multiplicities(
+            junction_counts
         )
 
-        components = connected_edge_components(
-            graph
-        )
-
-        if not components:
-            logging.warning(
-                "Cycle group %s has no cyclic core",
-                ",".join(source_ids)
+        if imbalances:
+            add_members_individually(
+                group,
+                "segment ends do not balance ({})".format(
+                    ", ".join(
+                        "{} has {} junction(s) on its left end "
+                        "and {} on its right".format(region, left, right)
+                        for region, left, right in imbalances
+                    )
+                )
             )
             continue
 
-        for component_graph in components:
-            odd_count = sum(
-                1
-                for neighbors in component_graph.values()
-                if len(neighbors) % 2 == 1
+        walk = reconstruct_big_cycle(junction_counts, multiplicities)
+
+        if len(walk) < 2:
+            add_members_individually(
+                group,
+                "the junctions do not form a single closed molecule"
             )
+            continue
 
-            if odd_count not in (0, 2):
-                logging.warning(
-                    "Skipping source cycles %s because the graph "
-                    "has %d odd-degree nodes",
-                    ",".join(source_ids),
-                    odd_count
-                )
-                continue
+        logging.info(
+            "Merged cycles %s into a %d-fragment big cycle",
+            ",".join(source_ids),
+            len(walk) - 1
+        )
 
-            walk = euler_walk(
-                component_graph
-            )
-
-            if len(walk) < 2:
-                continue
-
-            occurrences = count_walk_regions(
-                walk
-            )
-
-            valid, occurrences, violations = (
-                validate_walk_depth(
-                    walk=walk,
-                    copy_numbers=copy_numbers,
-                    copy_tolerance=copy_tolerance
-                )
-            )
-
-            if require_depth_support and not valid:
-                logging.warning(
-                    "Skipping depth-inconsistent cycle from %s: %s",
-                    ",".join(source_ids),
-                    violations
-                )
-                continue
-
-            used_regions = sorted(
-                occurrences
-            )
-
-            depth_text = format_region_values(
-                used_regions,
-                region_depths,
-                numeric_format="{:.2f}"
-            )
-
-            copy_number_text = (
-                format_region_values(
-                    used_regions,
-                    copy_numbers
-                )
-            )
-
-            occurrence_text = (
-                format_region_values(
-                    used_regions,
-                    occurrences
-                )
-            )
-
-            violation_text = format_violations(
-                violations
-            )
-
-            if walk[0] == walk[-1]:
-                fragment_count = len(walk) - 1
-            else:
-                fragment_count = len(walk)
-
-            total_size = path_size(
-                walk
-            )
-
-            output_records.append({
-                "bigcycle_id": bigcycle_id,
-                "source_cycles": ",".join(source_ids),
-                "total_size": total_size,
-                "fragment_count": fragment_count,
-                "depth_consistent": (
-                    "yes" if valid else "no"
-                ),
-                "region_depths": depth_text,
-                "region_copy_numbers": copy_number_text,
-                "region_occurrences": occurrence_text,
-                "depth_violations": violation_text,
-                "path": " -> ".join(walk)
-            })
-
-            bigcycle_id += 1
+        add_record(walk, source_ids)
 
     with open(outfile, "w") as out:
         out.write(header)
