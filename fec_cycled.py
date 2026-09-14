@@ -53,6 +53,16 @@ def normalize_cycle(cycle):
     return min(representations)
 
 
+def cycle_support(cycle, graph):
+    """
+    Total split-read support of the junctions a cycle traverses.
+    """
+    return sum(
+        graph.get(left, {}).get(right, 0)
+        for left, right in zip(cycle, cycle[1:])
+    )
+
+
 def dfs_visit(
     start,
     node,
@@ -75,8 +85,20 @@ def dfs_visit(
             key = normalize_cycle(
                 full_cycle
             )
-            if key not in cycles:
-                cycles[key] = full_cycle
+
+            # The same regions can be traversed in several orientation
+            # patterns, each using different junctions. normalize_cycle
+            # gives them all one key, so keep the best-supported one
+            # rather than whichever the search reached first.
+            candidate = (
+                cycle_support(full_cycle, graph),
+                tuple(full_cycle)
+            )
+
+            best = cycles.get(key)
+
+            if best is None or candidate > best[0]:
+                cycles[key] = (candidate, full_cycle)
 
         elif (
             len(path) < max_cycle_len
@@ -127,7 +149,10 @@ def find_cycles(graph, outdir, sample, max_cycle_len=20):
             detected_cycles, max_cycle_len
         )
 
-    cycles = list(detected_cycles.values())
+    cycles = [
+        cycle
+        for _, cycle in detected_cycles.values()
+    ]
 
 
     output_file = os.path.join(
