@@ -9,7 +9,7 @@ from fec_login import *
 # 4. Refine Regions by High-Q Clusters // 
 # -----------------------
 
-def refine_regions_by_highQ_breakpoints( regions, bps, outdir, sample, window=120000):
+def refine_regions_by_highQ_breakpoints( regions, bps, outdir, sample, window=1000):
 
     t0 = tic("Refining regions by high-Q breakpoints")
 
