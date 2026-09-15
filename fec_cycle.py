@@ -1,18 +1,16 @@
+
 #!/usr/bin/env python3
 
 import logging
-import pysam
+import math, pysam
 from collections import Counter, defaultdict
+
+import pysam
+
 
 def parse_nodes(path):
     """
     Parse a semicolon-separated cycle path.
-
-    Example:
-        A+;B-;C+;A+
-
-    Returns:
-        ["A+", "B-", "C+", "A+"]
     """
     return [
         node.strip()
@@ -23,223 +21,64 @@ def parse_nodes(path):
 
 def strandless_node(node):
     """
-    Return a region without its terminal strand symbol.
-
-    Example:
-        chr2:100-200+ -> chr2:100-200
-        chr2:100-200- -> chr2:100-200
+    Remove the terminal strand symbol from a graph node.
     """
-    if node.endswith("+") or node.endswith("-"):
+    if node.endswith(("+", "-")):
         return node[:-1]
 
     return node
 
 
-def remove_one(values, target):
+def parse_region(node):
     """
-    Remove one occurrence of target from a list.
-
-    Returns True if an occurrence was removed.
-    """
-    try:
-        values.remove(target)
-        return True
-    except ValueError:
-        return False
-
-
-def remove_leaf_nodes(graph):
-    """
-    Iteratively remove nodes with degree zero or one.
-
-    The graph is an undirected multigraph represented by adjacency
-    lists. Duplicate neighbors represent repeated edges.
-    """
-    while True:
-        leaves = [
-            node
-            for node, neighbors in graph.items()
-            if len(neighbors) <= 1
-        ]
-
-        if not leaves:
-            break
-
-        for leaf in leaves:
-            if leaf not in graph:
-                continue
-
-            neighbors = list(graph[leaf])
-
-            for neighbor in neighbors:
-                if neighbor in graph:
-                    remove_one(graph[neighbor], leaf)
-
-            del graph[leaf]
-
-    return graph
-
-
-def graph_has_edges(graph):
-    """
-    Return True if the graph contains at least one edge.
-    """
-    return any(neighbors for neighbors in graph.values())
-
-
-def euler_walk(graph):
-    """
-    Run Hierholzer's algorithm on an undirected multigraph.
-
-    Duplicate edges are retained, so the resulting walk may revisit
-    the same region multiple times.
+    Parse a strand-aware genomic node.
 
     Returns:
-        Ordered node list. For an Eulerian cycle, the first and final
-        nodes are identical.
+        chromosome, start, end
     """
-    work_graph = {
-        node: list(neighbors)
-        for node, neighbors in graph.items()
-    }
+    region = strandless_node(node)
 
-    if not graph_has_edges(work_graph):
-        return []
+    chromosome, coordinates = region.rsplit(":", 1)
+    start_text, end_text = coordinates.split("-", 1)
 
-    # Prefer a node with odd degree for an Eulerian path.
-    # If all degrees are even, this is an Eulerian cycle and any node
-    # with an edge can be used.
-    odd_nodes = [
-        node
-        for node, neighbors in work_graph.items()
-        if len(neighbors) % 2 == 1
-    ]
-
-    if odd_nodes:
-        start = sorted(odd_nodes)[0]
-    else:
-        start = sorted(
-            node
-            for node, neighbors in work_graph.items()
-            if neighbors
-        )[0]
-
-    stack = [start]
-    walk = []
-
-    while stack:
-        current = stack[-1]
-
-        if work_graph.get(current):
-            neighbor = work_graph[current].pop()
-
-            # Remove the matching reverse copy of this undirected edge.
-            if neighbor not in work_graph:
-                logging.warning(
-                    "Missing graph node while traversing edge %s -> %s",
-                    current,
-                    neighbor
-                )
-                continue
-
-            if not remove_one(work_graph[neighbor], current):
-                logging.warning(
-                    "Missing reverse edge while traversing %s -> %s",
-                    current,
-                    neighbor
-                )
-                continue
-
-            stack.append(neighbor)
-
-        else:
-            walk.append(stack.pop())
-
-    walk.reverse()
-
-    # Confirm that every edge in this connected graph was consumed.
-    remaining_edges = sum(
-        len(neighbors)
-        for neighbors in work_graph.values()
+    return (
+        chromosome,
+        int(start_text),
+        int(end_text)
     )
-
-    if remaining_edges:
-        logging.warning(
-            "Euler traversal left %d adjacency entries unused",
-            remaining_edges
-        )
-
-    return walk
-
-
-def connected_edge_components(graph):
-    """
-    Split a graph into connected components containing edges.
-
-    This protects against a strandless cycle group containing multiple
-    disconnected strand-aware subgraphs.
-    """
-    components = []
-    visited = set()
-
-    for start in sorted(graph):
-
-        if start in visited or not graph[start]: continue
-
-        component_nodes = set()
-        stack = [start]
-        visited.add(start)
-
-
-        while stack:
-            node = stack.pop()
-            component_nodes.add(node)
-
-            for neighbor in graph.get(node, []):
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    stack.append(neighbor)
-
-        component_graph = defaultdict(list)
-
-        for node in component_nodes:
-            component_graph[node] = [
-                neighbor
-                for neighbor in graph.get(node, [])
-                if neighbor in component_nodes
-            ]
-
-        components.append(component_graph)
-
-    return components
 
 
 def path_size(path):
     """
-    Calculate the summed fragment length of an Euler walk.
+    Calculate the total size of the fragments in a closed path.
 
-    The final node is excluded when it repeats the first node.
-    Repeated internal nodes are counted repeatedly because they
-    represent repeated traversal/copy usage.
+    This version assumes zero-based, half-open intervals. If the
+    summary file uses one-based inclusive intervals, change
+    end - start to end - start + 1.
     """
     if not path:
         return 0
 
-    nodes = path[:-1] if path[0] == path[-1] else path
+    effective_path = (
+        path[:-1]
+        if path[0] == path[-1]
+        else path
+    )
 
-    total = 0
+    total_size = 0
 
-    for node in nodes:
-        region = strandless_node(node)
-
+    for node in effective_path:
         try:
-            coordinate_text = region.rsplit(":", 1)[1]
-            start_text, end_text = coordinate_text.split("-", 1)
+            _, start, end = parse_region(node)
 
-            start = int(start_text)
-            end = int(end_text)
+            if end <= start:
+                logging.warning(
+                    "Invalid region coordinates: %s",
+                    node
+                )
+                continue
 
-            total += end - start + 1
+            total_size += end - start
 
         except (IndexError, ValueError):
             logging.warning(
@@ -247,28 +86,7 @@ def path_size(path):
                 node
             )
 
-    return total
-
-def parse_region(node):
-    """
-    Parse a strand-aware node.
-
-    Example:
-        chr2:11551952-12459661+
-
-    Returns:
-        ("chr2", 11551952, 12459661)
-    """
-    region = strandless_node(node)
-
-    chrom, coordinates = region.rsplit(":", 1)
-    start_text, end_text = coordinates.split("-", 1)
-
-    return (
-        chrom,
-        int(start_text),
-        int(end_text)
-    )
+    return total_size
 
 
 def calculate_region_depth(
@@ -277,23 +95,27 @@ def calculate_region_depth(
     min_mapping_quality=0
 ):
     """
-    Calculate average read depth across a genomic region.
+    Calculate average read depth across a half-open genomic interval.
 
-    Zero-coverage positions are included because total aligned depth
-    is divided by the full region length.
+    Positions with zero coverage are included because the summed
+    pileup depth is divided by the full interval length.
     """
-    chrom, start, end = parse_region(node)
+    chromosome, start, end = parse_region(node)
 
-    region_length = end - start + 1
+    region_length = end - start
 
     if region_length <= 0:
+        logging.warning(
+            "Invalid region length for %s",
+            node
+        )
         return 0.0
 
     total_depth = 0
 
     try:
         for column in bam.pileup(
-            chrom,
+            chromosome,
             start,
             end,
             truncate=True,
@@ -318,83 +140,7 @@ def calculate_copy_number(
     baseline_depth
 ):
     """
-    Estimate integer copy number from region depth.
-
-    Examples:
-        region depth 18, baseline 18 -> CN 1
-        region depth 37, baseline 18 -> CN 2
-        region depth 74, baseline 18 -> CN 4
-    """
-    if baseline_depth <= 0:
-        raise ValueError(
-            "baseline_depth must be greater than zero"
-        )
-
-    bam = pysam.AlignmentFile(
-        bam_path,
-        "rb"
-    )
-
-    region_depths = {}
-    copy_numbers = {}
-
-    all_regions = {
-        strandless_node(node)
-        for cycle in cycles
-        for node in cycle["nodes"][:-1]
-    }
-
-    logging.info(
-        "Calculating depth for %d unique cycle regions",
-        len(all_regions)
-    )
-
-    for region_number, region in enumerate(
-        sorted(all_regions),
-        start=1
-    ):
-        depth = calculate_region_depth(
-            bam=bam,
-            node=region,
-            min_mapping_quality=min_mapping_quality
-        )
-
-        copy_number = calculate_copy_number(
-            region_depth=depth,
-            baseline_depth=baseline_depth
-        )
-
-        region_depths[region] = depth
-        copy_numbers[region] = copy_number
-
-        logging.info(
-            "Region depth %s: depth=%.2f baseline=%.2f CN=%d",
-            region,
-            depth,
-            baseline_depth,
-            copy_number
-        )
-
-        if region_number % 100 == 0:
-            logging.info(
-                "Calculated depth for %d/%d regions",
-                region_number,
-                len(all_regions)
-            )
-
-    bam.close()
-
-def calculate_copy_number(
-    region_depth,
-    baseline_depth
-):
-    """
-    Estimate integer copy number from region depth.
-
-    Examples:
-        region depth 18, baseline 18 -> CN 1
-        region depth 37, baseline 18 -> CN 2
-        region depth 74, baseline 18 -> CN 4
+    Estimate an integer copy number from depth.
     """
     if baseline_depth <= 0:
         raise ValueError(
@@ -414,11 +160,10 @@ def calculate_region_copy_numbers(
     cycles,
     bam_path,
     baseline_depth,
-    min_mapping_quality=0
+    min_mapping_quality=30
 ):
     """
-    Calculate depth and estimated copy number once for every unique
-    genomic region found in the small cycles.
+    Calculate depth and copy number once for each unique region.
     """
     all_regions = {
         strandless_node(node)
@@ -434,12 +179,7 @@ def calculate_region_copy_numbers(
         len(all_regions)
     )
 
-    bam = pysam.AlignmentFile(
-        bam_path,
-        "rb"
-    )
-
-    try:
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
         for region_number, region in enumerate(
             sorted(all_regions),
             start=1
@@ -473,26 +213,23 @@ def calculate_region_copy_numbers(
                     len(all_regions)
                 )
 
-    finally:
-        bam.close()
-
     return region_depths, copy_numbers
 
 
 def count_walk_regions(walk):
     """
-    Count how many times each strandless genomic region occurs in an
-    Euler walk.
+    Count strandless fragment occurrences in a closed path.
 
-    The repeated closing node is excluded.
+    The final closing node is excluded.
     """
     if not walk:
         return Counter()
 
-    if walk[0] == walk[-1]:
-        effective_walk = walk[:-1]
-    else:
-        effective_walk = walk
+    effective_walk = (
+        walk[:-1]
+        if walk[0] == walk[-1]
+        else walk
+    )
 
     return Counter(
         strandless_node(node)
@@ -506,13 +243,7 @@ def validate_walk_depth(
     copy_tolerance=0
 ):
     """
-    Compare Euler-walk region occurrences with depth-estimated copy
-    numbers.
-
-    Returns:
-        valid
-        occurrences
-        violations
+    Compare path occurrences with depth-estimated copy numbers.
     """
     occurrences = count_walk_regions(walk)
     violations = {}
@@ -536,6 +267,14 @@ def validate_walk_depth(
 def load_cycles(summary_file):
     """
     Read small cycles from summary.txt.
+
+    Expected columns:
+        cycle_id
+        total_size
+        fragment_count
+        path
+
+    Additional columns are ignored.
     """
     cycles = []
 
@@ -574,9 +313,7 @@ def load_cycles(summary_file):
                 )
                 continue
 
-            nodes = parse_nodes(
-                fields[3]
-            )
+            nodes = parse_nodes(fields[3])
 
             if len(nodes) < 2:
                 continue
@@ -594,15 +331,193 @@ def load_cycles(summary_file):
 
     return cycles
 
-
-def build_cycle_groups(cycles):
+def flip_strand(node):
     """
-    Group small cycles when they share at least one genomic region.
-
-    Strand is ignored only when deciding which cycles belong to the
-    same event.
+    Flip the terminal strand orientation of a node.
     """
-    node_sets = [
+    if node.endswith("+"):
+        return node[:-1] + "-"
+
+    if node.endswith("-"):
+        return node[:-1] + "+"
+
+    return node
+
+
+def canonical_cycle_key(nodes):
+    """
+    Canonicalize a closed strand-aware cycle.
+
+    Cycles are considered equivalent when they differ only by:
+      - circular rotation;
+      - reverse-complement traversal.
+
+    The repeated closing node is excluded from the key.
+    """
+    if not nodes:
+        return tuple()
+
+    body = list(nodes)
+
+    if len(body) > 1 and body[0] == body[-1]:
+        body = body[:-1]
+
+    if not body:
+        return tuple()
+
+    forward_rotations = [
+        tuple(
+            body[index:]
+            + body[:index]
+        )
+        for index in range(len(body))
+    ]
+
+    reverse_complement_body = [
+        flip_strand(node)
+        for node in reversed(body)
+    ]
+
+    reverse_complement_rotations = [
+        tuple(
+            reverse_complement_body[index:]
+            + reverse_complement_body[:index]
+        )
+        for index in range(
+            len(reverse_complement_body)
+        )
+    ]
+
+    return min(
+        forward_rotations
+        + reverse_complement_rotations
+    )
+
+
+
+
+def find_duplicate_cycle_regions(cycle):
+    """
+    Return strandless genomic regions repeated internally.
+
+    The final closing node is excluded because it intentionally
+    repeats the first node.
+    """
+    if not cycle:
+        return {}
+
+    effective_cycle = (
+        cycle[:-1]
+        if cycle[0] == cycle[-1]
+        else cycle
+    )
+
+    occurrences = Counter(
+        strandless_node(node)
+        for node in effective_cycle
+    )
+
+    return {
+        region: count
+        for region, count in occurrences.items()
+        if count > 1
+    }
+
+def deduplicate_loaded_cycles(cycles):
+    """
+    Collapse complete cycles that differ only by circular rotation or
+    reverse-complement traversal.
+
+    The first cycle is retained as the representative. IDs of all
+    equivalent cycles are preserved as duplicate evidence.
+    """
+    retained_cycles = {}
+    duplicates_removed = 0
+
+    for cycle in cycles:
+        key = canonical_cycle_key(
+            cycle["nodes"]
+        )
+
+        if key not in retained_cycles:
+            retained_cycle = dict(cycle)
+
+            retained_cycle["duplicate_cycle_ids"] = [
+                cycle["id"]
+            ]
+
+            retained_cycle["duplicate_count"] = 1
+
+            retained_cycles[key] = retained_cycle
+
+        else:
+            retained_cycles[key][
+                "duplicate_cycle_ids"
+            ].append(
+                cycle["id"]
+            )
+
+            retained_cycles[key][
+                "duplicate_count"
+            ] += 1
+
+            duplicates_removed += 1
+
+    unique_cycles = list(
+        retained_cycles.values()
+    )
+
+    logging.info(
+        "Cycle deduplication: raw=%d unique=%d "
+        "duplicates_removed=%d",
+        len(cycles),
+        len(unique_cycles),
+        duplicates_removed
+    )
+
+    return unique_cycles
+
+
+def canonical_undirected_edge(left, right):
+    """
+    Return a consistent strand-aware undirected edge key.
+    """
+    return tuple(sorted((left, right)))
+
+
+def cycle_edge_set(cycle):
+    """
+    Return unique strand-aware undirected edges in one small cycle.
+    """
+    nodes = cycle["nodes"]
+
+    return {
+        canonical_undirected_edge(
+            nodes[index],
+            nodes[index + 1]
+        )
+        for index in range(len(nodes) - 1)
+        if nodes[index] != nodes[index + 1]
+    }
+
+
+def build_cycle_groups(
+    cycles,
+    minimum_shared_regions=2
+):
+    """
+    Group cycles transitively when they share enough strandless
+    genomic regions.
+
+    This preserves compatibility with the existing pipeline. Large
+    groups are later resolved by simple-cycle extraction.
+    """
+    if minimum_shared_regions < 1:
+        raise ValueError(
+            "minimum_shared_regions must be at least 1"
+        )
+
+    region_sets = [
         {
             strandless_node(node)
             for node in cycle["nodes"][:-1]
@@ -627,19 +542,790 @@ def build_cycle_groups(cycles):
                 if other in component:
                     continue
 
-                if node_sets[current].intersection(
-                    node_sets[other]
+                shared_regions = (
+                    region_sets[current]
+                    & region_sets[other]
+                )
+
+                if (
+                    len(shared_regions)
+                    >= minimum_shared_regions
                 ):
                     component.add(other)
                     stack.append(other)
 
         assigned.update(component)
-        groups.append(
-            sorted(component)
-        )
+        groups.append(sorted(component))
 
     return groups
 
+
+def build_deduplicated_cycle_graph(
+    group,
+    cycles
+):
+    """
+    Build a simple undirected strand-aware graph.
+
+    Each structural connection is stored once. IDs of all small-cycle
+    records supporting each connection are preserved as evidence.
+    """
+    unique_edges = set()
+    edge_source_cycles = defaultdict(set)
+
+    for cycle_index in group:
+        cycle = cycles[cycle_index]
+        nodes = cycle["nodes"]
+
+        source_cycle_ids = cycle.get(
+            "duplicate_cycle_ids",
+            [cycle["id"]]
+        )
+
+        for position in range(len(nodes) - 1):
+            left = nodes[position]
+            right = nodes[position + 1]
+
+            if left == right:
+                continue
+
+            edge = canonical_undirected_edge(
+                left,
+                right
+            )
+
+            unique_edges.add(
+                edge
+            )
+
+            edge_source_cycles[edge].update(
+                source_cycle_ids
+            )
+
+    graph = defaultdict(set)
+
+    for left, right in unique_edges:
+        graph[left].add(
+            right
+        )
+
+        graph[right].add(
+            left
+        )
+
+    logging.info(
+        "Built deduplicated graph: nodes=%d edges=%d "
+        "raw_edge_evidence=%d",
+        len(graph),
+        len(unique_edges),
+        sum(
+            len(source_ids)
+            for source_ids
+            in edge_source_cycles.values()
+        )
+    )
+
+    return (
+        graph,
+        edge_source_cycles
+    )
+
+def graph_has_edges(graph):
+    """
+    Return True when a graph contains at least one edge.
+    """
+    return any(
+        neighbors
+        for neighbors in graph.values()
+    )
+
+def connected_edge_components(graph):
+    """
+    Split an undirected graph into connected components containing
+    at least one edge.
+    """
+    components = []
+    visited = set()
+
+    for start in sorted(graph):
+        if start in visited:
+            continue
+
+        if not graph.get(start, set()):
+            visited.add(start)
+            continue
+
+        component_nodes = set()
+        stack = [start]
+        visited.add(start)
+
+        while stack:
+            node = stack.pop()
+            component_nodes.add(node)
+
+            for neighbor in graph.get(node, set()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    stack.append(neighbor)
+
+        component_graph = defaultdict(set)
+
+        for node in component_nodes:
+            component_graph[node] = {
+                neighbor
+                for neighbor in graph.get(node, set())
+                if neighbor in component_nodes
+            }
+
+        if graph_has_edges(component_graph):
+            components.append(component_graph)
+
+    return components
+
+def find_duplicate_cycle_edges(cycle):
+    """
+    Return undirected structural connections repeated within a cycle.
+    """
+    edge_counts = Counter()
+
+    for index in range(len(cycle) - 1):
+        edge = canonical_undirected_edge(
+            cycle[index],
+            cycle[index + 1]
+        )
+
+        edge_counts[edge] += 1
+
+    return {
+        edge: count
+        for edge, count in edge_counts.items()
+        if count > 1
+    }
+
+def canonical_simple_cycle(cycle):
+    """
+    Canonicalize a closed strand-aware candidate cycle.
+
+    Circular rotations and reverse-complement traversal are treated
+    as equivalent.
+    """
+    return canonical_cycle_key(
+        cycle
+    )
+
+def is_valid_simple_cycle(cycle):
+    """
+    Validate a simple closed structural cycle.
+
+    Requirements:
+      - at least two distinct genomic regions;
+      - first and final nodes are identical;
+      - no internal strand-aware node repeats;
+      - no internal strandless region repeats;
+      - no structural connection repeats.
+
+    Accepted:
+        A-B-A
+        A-B-C-A
+        A-B-C-D-A
+
+    Rejected:
+        A-B-C-B-A
+    """
+    if len(cycle) < 3:
+        return False
+
+    if cycle[0] != cycle[-1]:
+        return False
+
+    body = cycle[:-1]
+
+    if len(body) < 2:
+        return False
+
+    if len(body) != len(set(body)):
+        return False
+
+    strandless_regions = [
+        strandless_node(node)
+        for node in body
+    ]
+
+    if (
+        len(strandless_regions)
+        != len(set(strandless_regions))
+    ):
+        return False
+
+    # A-B-A is a valid special two-region circle. The same undirected
+    # edge appears twice because the path must return to A.
+    if len(body) == 2:
+        return True
+
+    if find_duplicate_cycle_edges(cycle):
+        return False
+
+    return True
+
+
+def find_two_region_cycles(
+    group,
+    cycles
+):
+    """
+    Retain unique original A-B-A two-region cycles.
+
+    The canonical representation is used only as a duplicate key.
+    The original path and orientation are preserved.
+    """
+    detected = {}
+
+    for cycle_index in group:
+        cycle = cycles[cycle_index]
+        nodes = cycle["nodes"]
+
+        if len(nodes) != 3:
+            continue
+
+        if nodes[0] != nodes[-1]:
+            continue
+
+        strandless_regions = {
+            strandless_node(node)
+            for node in nodes[:-1]
+        }
+
+        if len(strandless_regions) != 2:
+            continue
+
+        if not is_valid_simple_cycle(nodes):
+            continue
+
+        key = canonical_simple_cycle(nodes)
+
+        if key not in detected:
+            detected[key] = list(nodes)
+
+    return list(detected.values())
+
+
+def find_simple_cycles(
+    graph,
+    maximum_cycle_length=30,
+    maximum_candidate_cycles=100000
+):
+    """
+    Enumerate unique simple cycles containing at least three nodes.
+
+    No internal strand-aware or strandless region may repeat.
+    """
+    if maximum_cycle_length < 3:
+        raise ValueError(
+            "maximum_cycle_length must be at least 3"
+        )
+
+    if maximum_candidate_cycles < 1:
+        raise ValueError(
+            "maximum_candidate_cycles must be at least 1"
+        )
+
+    detected_cycles = {}
+    search_stopped = False
+
+    def search(
+        start,
+        current,
+        path,
+        used_nodes,
+        used_regions
+    ):
+        nonlocal search_stopped
+
+        if search_stopped:
+            return
+
+        if (
+            len(detected_cycles)
+            >= maximum_candidate_cycles
+        ):
+            search_stopped = True
+            return
+
+        if len(path) > maximum_cycle_length:
+            return
+
+        for neighbor in sorted(
+            graph.get(current, set())
+        ):
+            if neighbor == start:
+                if len(path) >= 3:
+                    candidate = path + [start]
+
+                    if not is_valid_simple_cycle(candidate):
+                        continue
+
+                    key = canonical_simple_cycle(candidate)
+
+                    if key not in detected_cycles:
+                        detected_cycles[key] = list(candidate)
+
+                continue
+
+            if neighbor in used_nodes:
+                continue
+
+            neighbor_region = strandless_node(
+                neighbor
+            )
+
+            if neighbor_region in used_regions:
+                continue
+
+            search(
+                start=start,
+                current=neighbor,
+                path=path + [neighbor],
+                used_nodes=used_nodes | {neighbor},
+                used_regions=(
+                    used_regions
+                    | {neighbor_region}
+                )
+            )
+
+            if search_stopped:
+                return
+
+    for start in sorted(graph):
+        search(
+            start=start,
+            current=start,
+            path=[start],
+            used_nodes={start},
+            used_regions={
+                strandless_node(start)
+            }
+        )
+
+        if search_stopped:
+            logging.warning(
+                "Stopped simple-cycle search after %d candidates",
+                maximum_candidate_cycles
+            )
+            break
+
+    result = list(detected_cycles.values())
+
+    logging.info(
+        "Detected %d unique simple cycles",
+        len(result)
+    )
+
+    return result
+
+
+def supporting_cycles_for_candidate(
+    candidate_cycle,
+    edge_source_cycles
+):
+    """
+    Return source-cycle IDs supporting at least one selected edge.
+    """
+    source_cycle_ids = set()
+
+    for index in range(len(candidate_cycle) - 1):
+        edge = canonical_undirected_edge(
+            candidate_cycle[index],
+            candidate_cycle[index + 1]
+        )
+
+        source_cycle_ids.update(
+            edge_source_cycles.get(
+                edge,
+                set()
+            )
+        )
+
+    return sorted(
+        source_cycle_ids,
+        key=lambda value: (
+            0,
+            int(value)
+        )
+        if str(value).isdigit()
+        else (
+            1,
+            str(value)
+        )
+    )
+
+
+def estimate_automatic_depth_range(
+    region_depths,
+    minimum_fold_gap=1.4,
+    upper_fold_gap=2.0,
+    maximum_upper_tail_fraction=0.10
+):
+    """
+    Estimate one diagnostic depth range for a preliminary group.
+
+    The first qualifying lower gap is used as the lower cutoff.
+    An upper gap is used only when it isolates a small upper tail.
+    """
+    depths = sorted(
+        float(depth)
+        for depth in region_depths.values()
+        if depth > 0
+    )
+
+    if not depths:
+        return (
+            0.0,
+            0.0,
+            {
+                "reason": "no_positive_depths",
+                "lower_gap": None,
+                "upper_gap": None,
+                "minimum_depth": 0.0,
+                "maximum_depth": 0.0,
+                "depth_count": 0
+            }
+        )
+
+    if len(depths) < 3:
+        minimum_depth = min(depths)
+        maximum_depth = max(depths)
+
+        return (
+            minimum_depth,
+            maximum_depth,
+            {
+                "reason": (
+                    "not_enough_depths_for_gap_detection"
+                ),
+                "lower_gap": None,
+                "upper_gap": None,
+                "minimum_depth": minimum_depth,
+                "maximum_depth": maximum_depth,
+                "depth_count": len(depths)
+            }
+        )
+
+    gaps = []
+
+    for index in range(len(depths) - 1):
+        lower_value = depths[index]
+        upper_value = depths[index + 1]
+
+        gaps.append({
+            "index": index,
+            "lower_value": lower_value,
+            "upper_value": upper_value,
+            "fold_gap": (
+                upper_value / lower_value
+            )
+        })
+
+    lower_candidates = [
+        gap
+        for gap in gaps
+        if gap["fold_gap"] >= minimum_fold_gap
+    ]
+
+    if lower_candidates:
+        lower_gap = min(
+            lower_candidates,
+            key=lambda gap: gap["index"]
+        )
+
+        minimum_depth = math.sqrt(
+            lower_gap["lower_value"]
+            * lower_gap["upper_value"]
+        )
+    else:
+        lower_gap = None
+        minimum_depth = min(depths)
+
+    upper_candidates = []
+
+    for gap in gaps:
+        upper_tail_count = (
+            len(depths)
+            - gap["index"]
+            - 1
+        )
+
+        upper_tail_fraction = (
+            upper_tail_count
+            / float(len(depths))
+        )
+
+        if (
+            gap["fold_gap"] >= upper_fold_gap
+            and upper_tail_fraction
+            <= maximum_upper_tail_fraction
+            and (
+                lower_gap is None
+                or gap["index"] > lower_gap["index"]
+            )
+        ):
+            candidate = dict(gap)
+            candidate["upper_tail_count"] = upper_tail_count
+            candidate["upper_tail_fraction"] = (
+                upper_tail_fraction
+            )
+            upper_candidates.append(candidate)
+
+    if upper_candidates:
+        upper_gap = max(
+            upper_candidates,
+            key=lambda gap: gap["fold_gap"]
+        )
+
+        maximum_depth = math.sqrt(
+            upper_gap["lower_value"]
+            * upper_gap["upper_value"]
+        )
+    else:
+        upper_gap = None
+        maximum_depth = max(depths)
+
+    if minimum_depth > maximum_depth:
+        minimum_depth = min(depths)
+        maximum_depth = max(depths)
+        lower_gap = None
+        upper_gap = None
+        reason = "invalid_range_use_observed_values"
+
+    elif lower_gap is not None and upper_gap is not None:
+        reason = "lower_gap_and_upper_outlier_gap"
+
+    elif lower_gap is not None:
+        reason = "lower_gap_and_observed_maximum"
+
+    elif upper_gap is not None:
+        reason = "observed_minimum_and_upper_outlier_gap"
+
+    else:
+        reason = "observed_minimum_and_maximum"
+
+    return (
+        minimum_depth,
+        maximum_depth,
+        {
+            "reason": reason,
+            "lower_gap": lower_gap,
+            "upper_gap": upper_gap,
+            "minimum_depth": minimum_depth,
+            "maximum_depth": maximum_depth,
+            "depth_count": len(depths)
+        }
+    )
+
+
+def evaluate_group_depth_range(
+    graph,
+    region_depths,
+    minimum_fold_gap=1.4,
+    upper_fold_gap=2.0,
+    maximum_upper_tail_fraction=0.10
+):
+    """
+    Calculate one depth range for all unique regions in a group graph.
+
+    The graph is not modified.
+    """
+    group_regions = {
+        strandless_node(node)
+        for node in graph
+    }
+
+    positive_depths = {
+        region: region_depths[region]
+        for region in group_regions
+        if (
+            region in region_depths
+            and region_depths[region] > 0
+        )
+    }
+
+    missing_regions = {
+        region
+        for region in group_regions
+        if region not in positive_depths
+    }
+
+    if not positive_depths:
+        removed_regions = {
+            region: {
+                "depth": 0.0,
+                "reason": "missing_region_depth"
+            }
+            for region in missing_regions
+        }
+
+        return (
+            0.0,
+            0.0,
+            {},
+            removed_regions,
+            {
+                "reason": "no_positive_depths",
+                "lower_gap": None,
+                "upper_gap": None,
+                "depth_count": 0
+            }
+        )
+
+    if len(positive_depths) <= 3:
+        minimum_depth = min(positive_depths.values())
+        maximum_depth = max(positive_depths.values())
+
+        kept_regions = dict(positive_depths)
+        removed_regions = {}
+
+        details = {
+            "reason": "short_group_keep_positive_depths",
+            "lower_gap": None,
+            "upper_gap": None,
+            "minimum_depth": minimum_depth,
+            "maximum_depth": maximum_depth,
+            "depth_count": len(positive_depths)
+        }
+
+    else:
+        (
+            minimum_depth,
+            maximum_depth,
+            details
+        ) = estimate_automatic_depth_range(
+            region_depths=positive_depths,
+            minimum_fold_gap=minimum_fold_gap,
+            upper_fold_gap=upper_fold_gap,
+            maximum_upper_tail_fraction=(
+                maximum_upper_tail_fraction
+            )
+        )
+
+        kept_regions = {}
+        removed_regions = {}
+
+        for region, depth in positive_depths.items():
+            if minimum_depth <= depth <= maximum_depth:
+                kept_regions[region] = depth
+            else:
+                removed_regions[region] = {
+                    "depth": depth,
+                    "reason": (
+                        "below_minimum_depth"
+                        if depth < minimum_depth
+                        else "above_maximum_depth"
+                    )
+                }
+
+    for region in missing_regions:
+        removed_regions[region] = {
+            "depth": 0.0,
+            "reason": "missing_region_depth"
+        }
+
+    return (
+        minimum_depth,
+        maximum_depth,
+        kept_regions,
+        removed_regions,
+        details
+    )
+
+def score_simple_cycle(
+    candidate_cycle,
+    edge_source_cycles
+):
+    """
+    Score one structurally valid simple cycle.
+
+    Priority:
+      1. More unique genomic regions.
+      2. More edges supported by multiple source cycles.
+      3. Stronger weakest-edge evidence.
+      4. Greater total edge evidence.
+
+    Depth does not affect candidate selection.
+    """
+    if not is_valid_simple_cycle(candidate_cycle):
+        return None
+
+    candidate_regions = {
+        strandless_node(node)
+        for node in candidate_cycle[:-1]
+    }
+
+    edge_evidence_counts = []
+
+    for index in range(len(candidate_cycle) - 1):
+        edge = canonical_undirected_edge(
+            candidate_cycle[index],
+            candidate_cycle[index + 1]
+        )
+
+        evidence_count = len(
+            edge_source_cycles.get(
+                edge,
+                set()
+            )
+        )
+
+        edge_evidence_counts.append(
+            evidence_count
+        )
+
+    if not edge_evidence_counts:
+        return None
+
+    # A candidate extracted from this graph should never have a
+    # missing edge. Reject it if the original-path preservation failed.
+    if min(edge_evidence_counts) == 0:
+        logging.warning(
+            "Rejecting candidate with missing edge evidence: %s",
+            " -> ".join(candidate_cycle)
+        )
+        return None
+
+    multiple_cycle_edge_count = sum(
+        count >= 2
+        for count in edge_evidence_counts
+    )
+
+    minimum_edge_evidence = min(
+        edge_evidence_counts
+    )
+
+    total_edge_evidence = sum(
+        edge_evidence_counts
+    )
+
+    return {
+        "cycle": candidate_cycle,
+        "candidate_regions": candidate_regions,
+        "unique_region_count": len(candidate_regions),
+        "multiple_cycle_edge_count": (
+            multiple_cycle_edge_count
+        ),
+        "minimum_edge_evidence": (
+            minimum_edge_evidence
+        ),
+        "total_edge_evidence": (
+            total_edge_evidence
+        ),
+        "edge_evidence_counts": (
+            edge_evidence_counts
+        ),
+        "score": (
+            len(candidate_regions),
+            multiple_cycle_edge_count,
+            minimum_edge_evidence,
+            total_edge_evidence
+        )
+    }
 
 def format_region_values(
     regions,
@@ -647,7 +1333,7 @@ def format_region_values(
     numeric_format=None
 ):
     """
-    Format a region-value dictionary for output.
+    Format region-value mappings for output.
     """
     result = []
 
@@ -671,7 +1357,7 @@ def format_region_values(
 
 def format_violations(violations):
     """
-    Format depth-copy-number violations for output.
+    Format copy-number violations.
     """
     if not violations:
         return "none"
@@ -688,6 +1374,26 @@ def format_violations(violations):
     )
 
 
+def format_depth_range_violations(
+    removed_regions
+):
+    """
+    Format candidate-level depth-range violations.
+    """
+    if not removed_regions:
+        return "none"
+
+    return ",".join(
+        "{}:depth={:.2f},reason={}".format(
+            region,
+            values["depth"],
+            values["reason"]
+        )
+        for region, values in sorted(
+            removed_regions.items()
+        )
+    )
+
 def merge_small_cycles(
     summary_file,
     outfile,
@@ -695,47 +1401,95 @@ def merge_small_cycles(
     baseline_depth,
     min_mapping_quality=0,
     copy_tolerance=0,
-    require_depth_support=False
+    require_depth_support=False,
+    minimum_shared_regions=2,
+    maximum_cycle_length=30,
+    maximum_candidate_cycles=100000,
+    maximum_reported_candidates=1
 ):
     """
-    Merge overlapping small cycles and construct strand-aware Euler
-    walks.
+    Reconstruct simple big-cycle candidates from small cycles.
 
-    Region depth is calculated from the BAM file. The number of times
-    each genomic region occurs in the Euler walk is compared with its
-    depth-estimated copy number.
+    Candidate selection uses structural evidence only.
 
-    If require_depth_support=False, all reconstructed cycles are
-    written and marked as depth-consistent or depth-inconsistent.
+    Depth and copy number are calculated for reporting. They do not
+    affect candidate ranking unless require_depth_support is True.
 
-    If require_depth_support=True, depth-inconsistent cycles are
-    omitted.
+    Workflow:
+      1. Load and deduplicate source cycles.
+      2. Calculate region depth and copy number.
+      3. Group cycles by shared strandless regions.
+      4. Build a deduplicated structural graph.
+      5. Enumerate two-region and larger simple cycles.
+      6. Preserve original graph paths during deduplication.
+      7. Rank candidates by fragment count and edge evidence.
+      8. Report the requested number of candidates.
     """
     if baseline_depth <= 0:
         raise ValueError(
             "baseline_depth must be greater than zero"
         )
 
-    cycles = load_cycles(
+    if minimum_shared_regions < 1:
+        raise ValueError(
+            "minimum_shared_regions must be at least 1"
+        )
+
+    if maximum_cycle_length < 3:
+        raise ValueError(
+            "maximum_cycle_length must be at least 3"
+        )
+
+    if maximum_candidate_cycles < 1:
+        raise ValueError(
+            "maximum_candidate_cycles must be at least 1"
+        )
+
+    if maximum_reported_candidates < 1:
+        raise ValueError(
+            "maximum_reported_candidates must be at least 1"
+        )
+
+    raw_cycles = load_cycles(
         summary_file
     )
 
+    cycles = deduplicate_loaded_cycles(
+        raw_cycles
+    )
+
+    output_fields = (
+        "bigcycle_id",
+        "group_cycles",
+        "source_cycles",
+        "candidate_rank",
+        "candidate_count",
+        "total_size",
+        "fragment_count",
+        "depth_range_consistent",
+        "depth_consistent",
+        "automatic_min_depth",
+        "automatic_max_depth",
+        "minimum_edge_evidence",
+        "total_edge_evidence",
+        "region_depths",
+        "region_copy_numbers",
+        "region_occurrences",
+        "depth_range_violations",
+        "depth_violations",
+        "path"
+    )
+
     header = (
-        "bigcycle_id\t"
-        "source_cycles\t"
-        "total_size\t"
-        "fragment_count\t"
-        "depth_consistent\t"
-        "region_depths\t"
-        "region_copy_numbers\t"
-        "region_occurrences\t"
-        "depth_violations\t"
-        "path\n"
+        "\t".join(output_fields)
+        + "\n"
     )
 
     if not cycles:
-        with open(outfile, "w") as out:
-            out.write(header)
+        with open(outfile, "w") as output_handle:
+            output_handle.write(
+                header
+            )
 
         logging.warning(
             "No cycles found in %s",
@@ -743,6 +1497,12 @@ def merge_small_cycles(
         )
 
         return []
+
+    logging.info(
+        "Loaded summary cycles: raw=%d unique=%d",
+        len(raw_cycles),
+        len(cycles)
+    )
 
     region_depths, copy_numbers = (
         calculate_region_copy_numbers(
@@ -754,82 +1514,230 @@ def merge_small_cycles(
     )
 
     groups = build_cycle_groups(
-        cycles
+        cycles=cycles,
+        minimum_shared_regions=minimum_shared_regions
+    )
+
+    logging.info(
+        "Created %d preliminary cycle groups",
+        len(groups)
     )
 
     output_records = []
     bigcycle_id = 1
 
-    for group in groups:
-        source_ids = [
-            cycles[index]["id"]
-            for index in group
-        ]
+    for group_number, group in enumerate(
+        groups,
+        start=1
+    ):
+        group_source_ids = sorted(
+            {
+                source_id
+                for cycle_index in group
+                for source_id in cycles[
+                    cycle_index
+                ].get(
+                    "duplicate_cycle_ids",
+                    [cycles[cycle_index]["id"]]
+                )
+            },
+            key=lambda value: (
+                0,
+                int(value)
+            )
+            if str(value).isdigit()
+            else (
+                1,
+                str(value)
+            )
+        )
 
-        graph = defaultdict(list)
+        graph, edge_source_cycles = (
+            build_deduplicated_cycle_graph(
+                group=group,
+                cycles=cycles
+            )
+        )
 
-        # Add every edge from every small cycle. Duplicate edges are
-        # retained and can therefore cause repeated traversal.
-        for index in group:
-            nodes = cycles[index]["nodes"]
+        if not graph_has_edges(graph):
+            logging.warning(
+                "Group %d has no graph edges",
+                group_number
+            )
+            continue
 
-            for position in range(
-                len(nodes) - 1
-            ):
-                left = nodes[position]
-                right = nodes[position + 1]
+        logging.info(
+            "Group %d: cycles=%s nodes=%d edges=%d",
+            group_number,
+            ",".join(
+                str(cycle_id)
+                for cycle_id in group_source_ids
+            ),
+            len(graph),
+            sum(
+                len(neighbors)
+                for neighbors in graph.values()
+            ) // 2
+        )
 
-                if left == right:
-                    continue
+        group_candidates = []
 
-                graph[left].append(right)
-                graph[right].append(left)
+        two_region_candidates = (
+            find_two_region_cycles(
+                group=group,
+                cycles=cycles
+            )
+        )
 
-        graph = remove_leaf_nodes(
-            graph
+        group_candidates.extend(
+            two_region_candidates
         )
 
         components = connected_edge_components(
             graph
         )
 
-        if not components:
+        logging.info(
+            "Group %d: two_region_candidates=%d "
+            "connected_components=%d",
+            group_number,
+            len(two_region_candidates),
+            len(components)
+        )
+
+        for component_number, component_graph in enumerate(
+            components,
+            start=1
+        ):
+            component_candidates = (
+                find_simple_cycles(
+                    graph=component_graph,
+                    maximum_cycle_length=(
+                        maximum_cycle_length
+                    ),
+                    maximum_candidate_cycles=(
+                        maximum_candidate_cycles
+                    )
+                )
+            )
+
+            logging.info(
+                "Group %d component %d: candidates=%d",
+                group_number,
+                component_number,
+                len(component_candidates)
+            )
+
+            group_candidates.extend(
+                component_candidates
+            )
+
+        logging.info(
+            "Group %d: raw candidates=%d",
+            group_number,
+            len(group_candidates)
+        )
+
+        # Use canonical representations only as duplicate keys.
+        # Preserve the original paths found in the graph.
+        unique_candidates = {}
+
+        for candidate in group_candidates:
+            if not is_valid_simple_cycle(
+                candidate
+            ):
+                continue
+
+            key = canonical_simple_cycle(
+                candidate
+            )
+
+            if key not in unique_candidates:
+                unique_candidates[key] = list(
+                    candidate
+                )
+
+        group_candidates = list(
+            unique_candidates.values()
+        )
+
+        logging.info(
+            "Group %d: valid unique candidates=%d",
+            group_number,
+            len(group_candidates)
+        )
+
+        if not group_candidates:
             logging.warning(
-                "Cycle group %s has no cyclic core",
-                ",".join(source_ids)
+                "No valid simple cycles found for group %d",
+                group_number
             )
             continue
 
-        for component_graph in components:
-            odd_count = sum(
-                1
-                for neighbors in component_graph.values()
-                if len(neighbors) % 2 == 1
-            )
+        scored_candidates = []
 
-            if odd_count not in (0, 2):
-                logging.warning(
-                    "Skipping source cycles %s because the graph "
-                    "has %d odd-degree nodes",
-                    ",".join(source_ids),
-                    odd_count
+        for candidate in group_candidates:
+            scored = score_simple_cycle(
+                candidate_cycle=candidate,
+                edge_source_cycles=(
+                    edge_source_cycles
                 )
-                continue
-
-            walk = euler_walk(
-                component_graph
             )
 
-            if len(walk) < 2:
-                continue
+            if scored is not None:
+                scored_candidates.append(
+                    scored
+                )
 
-            occurrences = count_walk_regions(
-                walk
+        logging.info(
+            "Group %d: scoreable candidates=%d",
+            group_number,
+            len(scored_candidates)
+        )
+
+        if not scored_candidates:
+            logging.warning(
+                "No scoreable candidates found for group %d",
+                group_number
+            )
+            continue
+
+        scored_candidates.sort(
+            key=lambda candidate: (
+                candidate["score"],
+                canonical_simple_cycle(
+                    candidate["cycle"]
+                )
+            ),
+            reverse=True
+        )
+
+        candidate_count = len(
+            scored_candidates
+        )
+
+        accepted_rank = 0
+
+        for scored in scored_candidates:
+            if accepted_rank >= maximum_reported_candidates:
+                break
+
+            selected_cycle = scored[
+                "cycle"
+            ]
+
+            source_cycle_ids = (
+                supporting_cycles_for_candidate(
+                    candidate_cycle=selected_cycle,
+                    edge_source_cycles=(
+                        edge_source_cycles
+                    )
+                )
             )
 
             valid, occurrences, violations = (
                 validate_walk_depth(
-                    walk=walk,
+                    walk=selected_cycle,
                     copy_numbers=copy_numbers,
                     copy_tolerance=copy_tolerance
                 )
@@ -837,87 +1745,153 @@ def merge_small_cycles(
 
             if require_depth_support and not valid:
                 logging.warning(
-                    "Skipping depth-inconsistent cycle from %s: %s",
-                    ",".join(source_ids),
-                    violations
+                    "Rejected group %d candidate because of "
+                    "copy-number violations: %s",
+                    group_number,
+                    format_violations(
+                        violations
+                    )
                 )
                 continue
+
+            accepted_rank += 1
 
             used_regions = sorted(
                 occurrences
             )
 
-            depth_text = format_region_values(
-                used_regions,
-                region_depths,
-                numeric_format="{:.2f}"
-            )
-
-            copy_number_text = (
-                format_region_values(
-                    used_regions,
-                    copy_numbers
+            depth_values = [
+                region_depths.get(
+                    region,
+                    0.0
                 )
-            )
+                for region in used_regions
+                if region_depths.get(
+                    region,
+                    0.0
+                ) > 0
+            ]
 
-            occurrence_text = (
-                format_region_values(
-                    used_regions,
-                    occurrences
+            if depth_values:
+                minimum_region_depth = min(
+                    depth_values
                 )
-            )
 
-            violation_text = format_violations(
-                violations
-            )
-
-            if walk[0] == walk[-1]:
-                fragment_count = len(walk) - 1
+                maximum_region_depth = max(
+                    depth_values
+                )
             else:
-                fragment_count = len(walk)
+                minimum_region_depth = 0.0
+                maximum_region_depth = 0.0
 
-            total_size = path_size(
-                walk
+            record = {
+                "bigcycle_id": bigcycle_id,
+                "group_cycles": ",".join(
+                    str(cycle_id)
+                    for cycle_id in group_source_ids
+                ),
+                "source_cycles": ",".join(
+                    str(cycle_id)
+                    for cycle_id in source_cycle_ids
+                ),
+                "candidate_rank": accepted_rank,
+                "candidate_count": candidate_count,
+                "total_size": path_size(
+                    selected_cycle
+                ),
+                "fragment_count": (
+                    len(selected_cycle) - 1
+                ),
+                "depth_range_consistent": (
+                    "not_applied"
+                ),
+                "depth_consistent": (
+                    "yes"
+                    if valid
+                    else "no"
+                ),
+                "automatic_min_depth": (
+                    "{:.2f}".format(
+                        minimum_region_depth
+                    )
+                ),
+                "automatic_max_depth": (
+                    "{:.2f}".format(
+                        maximum_region_depth
+                    )
+                ),
+                "minimum_edge_evidence": scored[
+                    "minimum_edge_evidence"
+                ],
+                "total_edge_evidence": scored[
+                    "total_edge_evidence"
+                ],
+                "region_depths": format_region_values(
+                    used_regions,
+                    region_depths,
+                    numeric_format="{:.2f}"
+                ),
+                "region_copy_numbers": (
+                    format_region_values(
+                        used_regions,
+                        copy_numbers
+                    )
+                ),
+                "region_occurrences": (
+                    format_region_values(
+                        used_regions,
+                        occurrences
+                    )
+                ),
+                "depth_range_violations": (
+                    "not_applied"
+                ),
+                "depth_violations": (
+                    format_violations(
+                        violations
+                    )
+                ),
+                "path": " -> ".join(
+                    selected_cycle
+                )
+            }
+
+            output_records.append(
+                record
             )
 
-            output_records.append({
-                "bigcycle_id": bigcycle_id,
-                "source_cycles": ",".join(source_ids),
-                "total_size": total_size,
-                "fragment_count": fragment_count,
-                "depth_consistent": (
-                    "yes" if valid else "no"
-                ),
-                "region_depths": depth_text,
-                "region_copy_numbers": copy_number_text,
-                "region_occurrences": occurrence_text,
-                "depth_violations": violation_text,
-                "path": " -> ".join(walk)
-            })
+            logging.info(
+                "Accepted big cycle %d: group=%d "
+                "rank=%d/%d fragments=%d "
+                "minimum_edge_evidence=%d "
+                "total_edge_evidence=%d",
+                bigcycle_id,
+                group_number,
+                accepted_rank,
+                candidate_count,
+                len(selected_cycle) - 1,
+                scored["minimum_edge_evidence"],
+                scored["total_edge_evidence"]
+            )
 
             bigcycle_id += 1
 
-    with open(outfile, "w") as out:
-        out.write(header)
+    with open(outfile, "w") as output_handle:
+        output_handle.write(
+            header
+        )
 
         for record in output_records:
-            out.write(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
-                    record["bigcycle_id"],
-                    record["source_cycles"],
-                    record["total_size"],
-                    record["fragment_count"],
-                    record["depth_consistent"],
-                    record["region_depths"],
-                    record["region_copy_numbers"],
-                    record["region_occurrences"],
-                    record["depth_violations"],
-                    record["path"]
+            output_handle.write(
+                "\t".join(
+                    str(record[field])
+                    for field in output_fields
                 )
+                + "\n"
             )
 
     logging.info(
-        "Wrote %d depth-checked big cycles -> %s",
+        "Wrote %d simple big-cycle candidates -> %s",
         len(output_records),
         outfile
     )
