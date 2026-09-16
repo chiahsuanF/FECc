@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-import os, logging,  pysam, csv, time, re
-from bisect import bisect_left, bisect_right
+import os, logging, pysam, re
 from fec_login import *
 
 # -----------------------
@@ -10,7 +9,7 @@ from fec_login import *
 def extract_breakpoints(bam_path, outdir, sample):
     t0 = tic("Collecting split-read breakpoints")
     bam = pysam.AlignmentFile(bam_path,'rb')
-    bps = []  # (qname, c1, bp1, mq1, c2, bp2, mq2)
+    bps = []  # (qname, c1, bp1, mq1, strand1, c2, bp2, mq2, strand2)
     for r in bam.fetch(until_eof=True):
         if not r.has_tag('SA'): continue
         blocks = r.get_blocks()
@@ -30,7 +29,7 @@ def extract_breakpoints(bam_path, outdir, sample):
 
             c2 = fields[0]
             pos2 = int(fields[1])
-            strand2 = fields[2]      # not used
+            strand2 = fields[2]
             cigar2 = fields[3]
             mq2 = int(fields[4])
 
@@ -38,15 +37,6 @@ def extract_breakpoints(bam_path, outdir, sample):
             
             strand1 = "-" if r.is_reverse else "+"
             bps.append(( qname, c1, bp1, mq1, strand1, c2, bp2, mq2, strand2 ))
-        """
-        bp1 = blocks[-1][1]; mq1 = r.mapping_quality; c1 = r.reference_name
-        qname = r.query_name
-        for sa in r.get_tag('SA').strip(';').split(';'):
-            if not sa: continue
-            c2, bp2, *_ = sa.split(',')[:3]
-            mq2 = int(sa.split(',')[4])
-            bps.append((qname, c1, bp1, mq1, c2, int(bp2), mq2))
-        """
     bam.close()
 
     fn = os.path.join(outdir, f"03_{sample}_breakpoints.txt")
@@ -68,30 +58,6 @@ def cigar_ref_len(cigar):
 
     return ref_len
 
-"""
-def breakpoint_from_sa(pos, cigar):
-    #Choose breakpoint from the side opposite
-    #the larger soft-clipped segment.
-
-
-    left_soft = 0
-    right_soft = 0
-
-    m = re.match(r'^(\d+)S', cigar)
-    if m:
-        left_soft = int(m.group(1))
-
-    m = re.search(r'(\d+)S$', cigar)
-    if m:
-        right_soft = int(m.group(1))
-
-    ref_len = cigar_ref_len(cigar)
-
-    if right_soft > left_soft:
-        return pos + ref_len
-
-    return pos
-"""
 def breakpoint_from_sa(pos2, strand2, cigar2):
 
     left_soft = 0
