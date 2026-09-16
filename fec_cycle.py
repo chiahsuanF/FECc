@@ -1017,7 +1017,6 @@ def merge_small_cycles(
 
     header = (
         "bigcycle_id\t"
-        "source_cycles\t"
         "total_size\t"
         "fragment_count\t"
         "depth_consistent\t"
@@ -1094,7 +1093,6 @@ def merge_small_cycles(
 
         output_records.append({
             "bigcycle_id": len(output_records) + 1,
-            "source_cycles": ",".join(source_ids),
             "total_size": path_size(walk),
             "fragment_count": (
                 len(walk) - 1
@@ -1277,9 +1275,8 @@ def merge_small_cycles(
 
         for record in output_records:
             out.write(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
                     record["bigcycle_id"],
-                    record["source_cycles"],
                     record["total_size"],
                     record["fragment_count"],
                     record["depth_consistent"],
