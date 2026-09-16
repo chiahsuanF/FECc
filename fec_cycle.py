@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
+import math
 import pysam
 from collections import Counter, defaultdict
 
@@ -220,6 +221,126 @@ def build_region_groups(cycles):
         groups[find(index)].append(index)
 
     return [members for _, members in sorted(groups.items())]
+
+
+# ---------------------------------------------------------------
+# Depth filtering
+# ---------------------------------------------------------------
+#
+# The regions of one amplicon are carried at a similar, high copy
+# number. A region sitting at near-germline depth that a junction
+# happens to attach to the amplicon is more likely a mapping artefact or
+# an unrelated low-level rearrangement than part of the same molecule.
+#
+# Sorted region depths within one connected group therefore tend to fall
+# into a low shoulder and an amplified core with a visible fold gap
+# between them. The cutoff goes at the first gap wide enough to count,
+# placed at the geometric mean of the two depths it separates.
+#
+# A region cannot be dropped from a reconstruction on its own: removing
+# it leaves its two segment ends unbalanced. The filter therefore works
+# on whole small cycles, each of which is closed, so whatever remains
+# still balances.
+
+
+def estimate_depth_cutoff(depths, minimum_fold_gap=1.4):
+    """
+    Place a depth cutoff at the widest gap in sorted depths.
+
+    A gap has to leave at least two regions above it to be usable, since
+    fewer than two cannot form a molecule. That also keeps the cutoff
+    off the top of the range, where a single hyper-amplified region
+    would otherwise strand the rest of its own amplicon below the line.
+
+    Returns 0.0, meaning keep every region, when there are too few
+    depths to read a gap from or when no gap is wide enough. A group
+    whose depths climb smoothly is one depth level, not two.
+    """
+    values = sorted(
+        float(depth)
+        for depth in depths
+        if depth > 0
+    )
+
+    if len(values) < 3:
+        return 0.0
+
+    widest = None
+
+    for position in range(len(values) - 1):
+        if len(values) - position - 1 < 2:
+            break
+
+        below = values[position]
+        above = values[position + 1]
+        fold_gap = above / below
+
+        if fold_gap < minimum_fold_gap:
+            continue
+
+        if widest is None or fold_gap > widest[0]:
+            widest = (fold_gap, below, above)
+
+    if widest is None:
+        return 0.0
+
+    return math.sqrt(widest[1] * widest[2])
+
+
+def partition_group_by_depth(
+    cycles,
+    group,
+    region_depths,
+    minimum_fold_gap=1.4
+):
+    """
+    Split a group's cycles into the amplified core and the low-depth
+    rest.
+
+    A cycle joins the low-depth set when any region it visits sits below
+    the cutoff, because the path through that region is exactly what the
+    depth does not support. A region with no depth counts as below.
+
+    Returns (core, low, cutoff, low_regions).
+    """
+    group_regions = set()
+
+    for index in group:
+        group_regions |= cycle_regions(cycles[index])
+
+    cutoff = estimate_depth_cutoff(
+        (
+            region_depths.get(region, 0.0)
+            for region in group_regions
+        ),
+        minimum_fold_gap
+    )
+
+    if cutoff <= 0:
+        return list(group), [], 0.0, set()
+
+    low_regions = {
+        region
+        for region in group_regions
+        if region_depths.get(region, 0.0) < cutoff
+    }
+
+    core = []
+    low = []
+
+    for index in group:
+        if cycle_regions(cycles[index]) & low_regions:
+            low.append(index)
+        else:
+            core.append(index)
+
+    if not core:
+        # Every cycle reaches below the cutoff, so the gap separates
+        # depth levels inside one structure rather than an amplicon from
+        # its background.
+        return list(group), [], 0.0, set()
+
+    return core, low, cutoff, low_regions
 
 
 def reuse_supported(multiplicities, copy_numbers, copy_tolerance=0):
@@ -556,7 +677,7 @@ def parse_region(node):
 def calculate_region_depth(
     bam,
     node,
-    min_mapping_quality=0
+    min_mapping_quality=30
 ):
     """
     Calculate average read depth across a genomic region.
@@ -861,7 +982,9 @@ def merge_small_cycles(
     baseline_depth,
     min_mapping_quality=0,
     copy_tolerance=0,
-    require_depth_support=False
+    require_depth_support=False,
+    apply_depth_filter=True,
+    depth_filter_fold_gap=1.4
 ):
     """
     Build big ecDNA cycles from the small cycles in summary.txt.
@@ -870,6 +993,13 @@ def merge_small_cycles(
     shortcut across the same structure rather than separate evidence, so
     the big cycle for an event is the small cycle no other cycle covers.
     The cycles it explains are listed alongside it.
+
+    Within a group of connected cycles, depth separates the amplified
+    core from regions carried at near-germline level. A cycle that
+    visits a below-cutoff region is written on its own and marked
+    low_depth instead of being merged into the core molecule, so the
+    evidence stays in the output; apply_depth_filter=False turns that
+    off and merges the group as a whole.
 
     Region depth is read from the BAM and compared with how often each
     region is traversed. With require_depth_support=False every cycle is
@@ -891,6 +1021,9 @@ def merge_small_cycles(
         "total_size\t"
         "fragment_count\t"
         "depth_consistent\t"
+        "amplicon_filter\t"
+        "depth_cutoff\t"
+        "low_depth_regions\t"
         "region_depths\t"
         "region_copy_numbers\t"
         "region_occurrences\t"
@@ -935,7 +1068,13 @@ def merge_small_cycles(
 
     output_records = []
 
-    def add_record(walk, source_ids):
+    def add_record(
+        walk,
+        source_ids,
+        cutoff=0.0,
+        amplicon_filter="core",
+        low_regions=()
+    ):
         """Depth-check one big cycle and queue it for output."""
         valid, occurrences, violations = validate_walk_depth(
             walk=walk,
@@ -963,6 +1102,21 @@ def merge_small_cycles(
                 else len(walk)
             ),
             "depth_consistent": "yes" if valid else "no",
+            "amplicon_filter": amplicon_filter,
+            "depth_cutoff": (
+                "{:.2f}".format(cutoff)
+                if cutoff > 0
+                else "na"
+            ),
+            "low_depth_regions": (
+                format_region_values(
+                    low_regions,
+                    region_depths,
+                    numeric_format="{:.2f}"
+                )
+                if low_regions
+                else "none"
+            ),
             "region_depths": format_region_values(
                 used_regions,
                 region_depths,
@@ -984,7 +1138,7 @@ def merge_small_cycles(
         """A survivor's own id plus the ids of the cycles it covers."""
         return [survivors[index]["id"]] + covered_by[index]
 
-    def add_separately(group, reason):
+    def add_separately(group, cutoff, reason):
         """Report a group's cycles as individual big cycles."""
         logging.info(
             "Reporting cycle(s) %s separately: %s",
@@ -993,16 +1147,21 @@ def merge_small_cycles(
         )
 
         for index in group:
-            add_record(survivors[index]["nodes"], sources_for(index))
+            add_record(
+                survivors[index]["nodes"],
+                sources_for(index),
+                cutoff=cutoff
+            )
 
-    for group in build_region_groups(survivors):
-
+    def merge_group(group, cutoff):
+        """Reconstruct one connected set of cycles as one molecule."""
         if len(group) == 1:
             add_record(
                 survivors[group[0]]["nodes"],
-                sources_for(group[0])
+                sources_for(group[0]),
+                cutoff=cutoff
             )
-            continue
+            return
 
         # Cycles sharing a region may be one molecule that traverses the
         # shared region more than once.
@@ -1015,6 +1174,7 @@ def merge_small_cycles(
         if imbalances:
             add_separately(
                 group,
+                cutoff,
                 "segment ends do not balance ({})".format(
                     ", ".join(
                         "{} has {} junction(s) on its left end "
@@ -1023,7 +1183,7 @@ def merge_small_cycles(
                     )
                 )
             )
-            continue
+            return
 
         supported, shortfall = reuse_supported(
             multiplicities,
@@ -1034,19 +1194,21 @@ def merge_small_cycles(
         if not supported:
             add_separately(
                 group,
+                cutoff,
                 "depth does not support the reuse this merge needs "
                 "({})".format(format_violations(shortfall))
             )
-            continue
+            return
 
         walk = reconstruct_big_cycle(junction_counts, multiplicities)
 
         if len(walk) < 2:
             add_separately(
                 group,
+                cutoff,
                 "the junctions do not form a single closed molecule"
             )
-            continue
+            return
 
         source_ids = [
             source
@@ -1060,19 +1222,70 @@ def merge_small_cycles(
             len(walk) - 1
         )
 
-        add_record(walk, source_ids)
+        add_record(walk, source_ids, cutoff=cutoff)
+
+    for group in build_region_groups(survivors):
+
+        if apply_depth_filter:
+            core, low, cutoff, low_regions = partition_group_by_depth(
+                cycles=survivors,
+                group=group,
+                region_depths=region_depths,
+                minimum_fold_gap=depth_filter_fold_gap
+            )
+        else:
+            core, low, cutoff, low_regions = list(group), [], 0.0, set()
+
+        if low:
+            logging.info(
+                "Depth cutoff %.2fx splits a %d-cycle group into %d core "
+                "cycle(s) and %d low-depth cycle(s); below the cutoff: %s",
+                cutoff,
+                len(group),
+                len(core),
+                len(low),
+                format_region_values(
+                    sorted(low_regions),
+                    region_depths,
+                    numeric_format="{:.2f}"
+                )
+            )
+
+        for index in low:
+            add_record(
+                survivors[index]["nodes"],
+                sources_for(index),
+                cutoff=cutoff,
+                amplicon_filter="low_depth",
+                low_regions=sorted(
+                    cycle_regions(survivors[index]) & low_regions
+                )
+            )
+
+        # Removing the low-depth cycles can leave the core in several
+        # pieces, so the remainder is regrouped before merging.
+        core_cycles = [survivors[index] for index in core]
+
+        for members in build_region_groups(core_cycles):
+            merge_group(
+                [core[position] for position in members],
+                cutoff
+            )
 
     with open(outfile, "w") as out:
         out.write(header)
 
         for record in output_records:
             out.write(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
                     record["bigcycle_id"],
                     record["source_cycles"],
                     record["total_size"],
                     record["fragment_count"],
                     record["depth_consistent"],
+                    record["amplicon_filter"],
+                    record["depth_cutoff"],
+                    record["low_depth_regions"],
                     record["region_depths"],
                     record["region_copy_numbers"],
                     record["region_occurrences"],
