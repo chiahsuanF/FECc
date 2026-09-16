@@ -11,9 +11,9 @@ from fec_login import *
 # -----------------------
 
 MIN_SA_SUPPORT = 2
-MIN_SA_RATIO = 0.2
+MIN_SA_RATIO = 0.3#
 
-def build_graph( regs, bps, amp_thresh, outdir, sample, global_depth, min_mq=30):
+def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
     t0 = tic("Building junction graph")
     
     if global_depth <= 0:
