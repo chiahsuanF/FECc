@@ -29,6 +29,11 @@ if __name__=="__main__":
     p.add_argument('-d',"--depth", type=float, help='[FLOAT]Approximately total depth')
     p.add_argument('-t',"--threads", type=int, default=4, help="[INT] Number of CPU threads to use")
     p.add_argument('-mc',"--max_cycle_len", type=int, default=20, help="[INT] Maximum number of fragments allowed in each eccDNA cycle")
+    p.add_argument('-ct',"--copy_tolerance", type=int, default=0, help="[INT] Extra region traversals allowed beyond the depth-estimated copy number")
+    p.add_argument("--require_depth_support", action="store_true", help="Drop big cycles whose region usage exceeds the depth-estimated copy number, instead of only marking them")
+    p.add_argument('-mq',"--min_mapping_quality", type=int, default=30, help="[INT] Minimum read mapping quality for big-cycle region depth; 0 counts multi-mapping reads and inflates depth in repeat regions")
+    p.add_argument("--no_depth_filter", action="store_true", help="Merge every cycle of a group, instead of holding back the cycles that visit a region below the group's depth cutoff")
+    p.add_argument("--depth_filter_fold_gap", type=float, default=1.4, help="[[FLOAT] Smallest fold gap in sorted region depths that may be used as the cutoff; the widest qualifying gap separates the amplified core from the low-depth backgroun")
 
     args=p.parse_args()
 
@@ -62,15 +67,9 @@ if __name__=="__main__":
     refined = refine_regions_by_highQ_breakpoints( merged, bps, args.output_dir, sample, window=200000) #120,000
 
     # 5) Build Junction Graph
-    graph = build_graph(refined, bps, amp_thresh, args.output_dir, sample, depth)
+    graph = build_graph(refined, bps, args.output_dir, sample, depth)
     
     # 6) Detect cycles & write raw coords
-    """    
-    raw_cycles = find_cycles( graph, args.output_dir, sample)
-    write_cycles_with_coords(raw_cycles, refined, args.output_dir, sample, "raw")
-    if not raw_cycles:
-        logging.error("No cycles detected; exiting"); sys.exit(1)
-    """    
     raw_cycles = find_cycles( graph, args.output_dir, sample, max_cycle_len=args.max_cycle_len)
     if not raw_cycles:
         logging.error("No cycles detected; exiting")
@@ -105,15 +104,16 @@ if __name__=="__main__":
     
     summary_file = os.path.join( args.output_dir, "summary.txt")
     bigcycle_file = os.path.join( args.output_dir, "summary_bigcycle.txt")
-    #merge_small_cycles( summary_file, bigcycle_file)
     merge_small_cycles(
     summary_file=summary_file,
     outfile=bigcycle_file,
     bam_path=args.bam,
     baseline_depth=depth,
-    min_mapping_quality=0,
-    copy_tolerance=0,
-    require_depth_support=False
+    min_mapping_quality=args.min_mapping_quality,
+    copy_tolerance=args.copy_tolerance,
+    require_depth_support=args.require_depth_support,
+    apply_depth_filter=not args.no_depth_filter,
+    depth_filter_fold_gap=args.depth_filter_fold_gap
 )
     bigcycle_plot_dir = os.path.join(
     args.output_dir,
@@ -130,6 +130,3 @@ if __name__=="__main__":
     build_cycle_fasta( filtered, refined, args.reference_genome, args.output_dir, sample)
     
     logging.info("Pipeline completed successfully")
-    
-    
-    #os.system('rm 0*.txt')
