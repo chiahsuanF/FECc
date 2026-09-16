@@ -184,7 +184,6 @@ def plot_bigcycle_path(
     path_text,
     output_file,
     bigcycle_id=None,
-    source_cycles=None,
     depth_consistent=None,
     dpi=250,
     minimum_arc_degrees=5.0
@@ -509,13 +508,13 @@ def plot_bigcycle_path(
     axis.axis("off")
 
     title = "Reconstructed eccDNA"
-
+    """
     if source_cycles:
         title = "{}\nSource cycles: {}".format(
             title,
             source_cycles
         )
-
+    """
     axis.set_title(
         title,
         fontsize=12,
@@ -580,7 +579,6 @@ def plot_bigcycles_from_summary(
 
         required_columns = {
             "bigcycle_id",
-            "source_cycles",
             "path"
         }
 
@@ -623,10 +621,6 @@ def plot_bigcycles_from_summary(
                 column_index["bigcycle_id"]
             ]
 
-            source_cycles = fields[
-                column_index["source_cycles"]
-            ]
-
             path_text = fields[
                 column_index["path"]
             ]
@@ -660,7 +654,6 @@ def plot_bigcycles_from_summary(
                 path_text=path_text,
                 output_file=output_file,
                 bigcycle_id=bigcycle_id,
-                source_cycles=source_cycles,
                 depth_consistent=depth_consistent,
                 dpi=dpi
             )
