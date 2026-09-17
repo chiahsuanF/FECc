@@ -92,18 +92,10 @@ if __name__=="__main__":
     if not filtered:
         logging.error("No cycles pass quality filter; exiting"); sys.exit(1)
         
-    # 8) POA & refined connections
-    junctions = build_unique_junctions(filtered, refined)
-
-    results = process_junctions_fast(
-        junctions,
-        args.bam,
-        args.reference_genome,
-        os.path.join(args.output_dir, "poa"),
-        threads=args.threads)
-    
+    # 8) POA & refined connections    
     summary_file = os.path.join( args.output_dir, "summary.txt")
     bigcycle_file = os.path.join( args.output_dir, "summary_bigcycle.txt")
+    
     merge_small_cycles(
     summary_file=summary_file,
     outfile=bigcycle_file,
@@ -119,14 +111,28 @@ if __name__=="__main__":
     args.output_dir,
     "bigcycle_plots"
 )
+    junctions = build_junctions_from_bigcycles(
+        bigcycle_file
+    )
+
+    results = process_junctions_fast(
+        junctions,
+        args.bam,
+        args.reference_genome,
+        os.path.join(args.output_dir, "poa"),
+        threads=args.threads
+    )
 
     plot_bigcycles_from_summary(
         summary_bigcycle_file=bigcycle_file,
         output_dir=bigcycle_plot_dir,
         dpi=200,
-        plot_depth_inconsistent=True
     )
     
-    build_cycle_fasta( filtered, refined, args.reference_genome, args.output_dir, sample)
-    
+    build_bigcycle_fasta(
+        summary_bigcycle_file=bigcycle_file,
+        reference_genome=args.reference_genome,
+        output_dir=args.output_dir,
+        sample=sample
+    )    
     logging.info("Pipeline completed successfully")
