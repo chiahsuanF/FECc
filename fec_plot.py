@@ -184,7 +184,6 @@ def plot_bigcycle_path(
     path_text,
     output_file,
     bigcycle_id=None,
-    depth_consistent=None,
     dpi=250,
     minimum_arc_degrees=5.0
 ):
@@ -469,11 +468,6 @@ def plot_bigcycle_path(
         "{} fragments".format(node_count)
     )
 
-    if depth_consistent is not None:
-        center_lines.append(
-            "depth: {}".format(depth_consistent)
-        )
-
     axis.text(
         0,
         0,
@@ -543,8 +537,7 @@ def plot_bigcycle_path(
 def plot_bigcycles_from_summary(
     summary_bigcycle_file,
     output_dir,
-    dpi=200,
-    plot_depth_inconsistent=True
+    dpi=200
 ):
     """
     Read summary_bigcycle.txt and create one PNG for each big cycle.
@@ -625,24 +618,6 @@ def plot_bigcycles_from_summary(
                 column_index["path"]
             ]
 
-            depth_consistent = None
-
-            if "depth_consistent" in column_index:
-                depth_consistent = fields[
-                    column_index["depth_consistent"]
-                ]
-
-            if (
-                not plot_depth_inconsistent
-                and depth_consistent is not None
-                and depth_consistent.lower() != "yes"
-            ):
-                logging.info(
-                    "Skipping depth-inconsistent big cycle %s",
-                    bigcycle_id
-                )
-                continue
-
             output_file = os.path.join(
                 output_dir,
                 "bigcycle_{}.png".format(
@@ -654,7 +629,6 @@ def plot_bigcycles_from_summary(
                 path_text=path_text,
                 output_file=output_file,
                 bigcycle_id=bigcycle_id,
-                depth_consistent=depth_consistent,
                 dpi=dpi
             )
 
