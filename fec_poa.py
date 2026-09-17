@@ -1,46 +1,100 @@
 #!/usr/bin/env python3
 
-import os, logging, subprocess, pysam, csv, time
-from bisect import bisect_left, bisect_right
+import os, logging, subprocess, pysam
 from concurrent.futures import ThreadPoolExecutor
-from fec_login import *
 
 # -----------------------
 # 8. POA & Refined Connections
 # -----------------------
-def build_unique_junctions(cycles, regs):
+def parse_bigcycle_node(node):
+    """
+    Convert
 
-    junctions = set()
+        chr2:100-200+
 
-    for cyc in cycles:
+    into
 
-        coords = [
-            (
-                regs[node[0]][0],   # chrom
-                regs[node[0]][1],   # start
-                regs[node[0]][2],   # end
-                node[1]             # strand
-            )
-            for node in cyc
-        ]
+        ("chr2", 100, 200, "+")
+    """
 
-        for j in range(len(coords) - 1):
+    node = node.strip()
 
-            c1, s1, e1, strand1 = coords[j]
-            c2, s2, e2, strand2 = coords[j + 1]
+    strand = node[-1]
 
-            key = (
-                c1,
-                s1,
-                strand1,
-                c2,
-                s2,
-                strand2
-            )
+    region = node[:-1]
 
-            junctions.add(key)
+    chrom, coords = region.rsplit(":", 1)
 
-    return list(junctions)
+    start_text, end_text = coords.split("-", 1)
+
+    return (
+        chrom,
+        int(start_text),
+        int(end_text),
+        strand
+    )
+
+
+def build_junctions_from_bigcycles(summary_bigcycle_file):
+
+    junctions = []
+
+    with open(summary_bigcycle_file, "r") as handle:
+
+        header = handle.readline().rstrip("\n").split("\t")
+
+        column_index = {
+            name: index
+            for index, name in enumerate(header)
+        }
+
+        path_column = column_index["path"]
+
+        for line in handle:
+
+            line = line.rstrip("\n")
+
+            if not line:
+                continue
+
+            fields = line.split("\t")
+
+            path_text = fields[path_column]
+
+            nodes = [
+                node.strip()
+                for node in path_text.split("->")
+                if node.strip()
+            ]
+
+            for i in range(len(nodes) - 1):
+
+                c1, s1, e1, strand1 = parse_bigcycle_node(
+                    nodes[i]
+                )
+
+                c2, s2, e2, strand2 = parse_bigcycle_node(
+                    nodes[i + 1]
+                )
+
+                junctions.append(
+                    (
+                        c1,
+                        s1,
+                        strand1,
+                        c2,
+                        s2,
+                        strand2
+                    )
+                )
+
+    logging.info(
+        "Extracted %d junction occurrences from %s",
+        len(junctions),
+        summary_bigcycle_file
+    )
+
+    return junctions
 
 def fetch_reads_cached(bam_path, chrom, pos, window=150):
     bam = pysam.AlignmentFile(bam_path, "rb")
@@ -146,7 +200,7 @@ def process_junctions_fast(junctions, bam_path, ref, outdir, threads=8):
 
             return (jid, cons)
 
-        except Exception as e:
+        except Exception:
 
             logging.exception(
                 f"Junction {jid}: POA failed"
@@ -170,187 +224,3 @@ def process_junctions_fast(junctions, bam_path, ref, outdir, threads=8):
     )
 
     return results
-
-def extract_reads_for_poa(bam_path, chrom, pos, window=100, min_sc=20):
-    bam=pysam.AlignmentFile(bam_path,'rb')
-    reads=[]
-    lo,hi=max(0,pos-window),pos+window
-    for r in bam.fetch(chrom, lo, hi):
-        if r.is_unmapped: continue
-        if any(bs<=pos<be for bs,be in r.get_blocks()):
-            reads.append(r)
-        else:
-            sc=sum(l for op,l in r.cigartuples if op==4)
-            if sc>=min_sc:
-                reads.append(r)
-    bam.close()
-    return reads
-
-def map_consensus_sequence(seq_id, seq_lines, ref, prefix):
-
-    fa = f"{prefix}_{seq_id}.fa".replace(" ", "_")
-
-    # -----------------------
-    # write consensus FASTA
-    # -----------------------
-    with open(fa, "w") as f:
-        f.write(f">{seq_id}\n")
-        f.write("".join(seq_lines) + "\n")
-
-    samfile = fa.replace(".fa", ".sam")
-    unsorted_bam = fa.replace(".fa", ".bam")
-    outbam = fa.replace(".fa", "_sorted.bam")
-
-    # -----------------------
-    # minimap2 alignment
-    # -----------------------
-    cmd = ["minimap2", "-t", "4", "-ax", "asm5", ref, fa]
-
-    with open(samfile, "w") as sam_out:
-        subprocess.check_call(
-            cmd,
-            stdout=sam_out
-        )
-
-    # -----------------------
-    # SAM -> BAM
-    # -----------------------
-    pysam.view("-bS", "-o", unsorted_bam, samfile, catch_stdout=False)
-
-    # -----------------------
-    # sort BAM
-    # -----------------------
-    pysam.sort("-@", "4", "-o", outbam, unsorted_bam)
-
-    # -----------------------
-    # index BAM
-    # -----------------------
-    pysam.index(outbam)
-
-    # -----------------------
-    # cleanup
-    # -----------------------
-    for tmp in (samfile, unsorted_bam):
-        if os.path.exists(tmp):
-            os.remove(tmp)
-
-    return outbam
-
-
-
-def poa_and_mapping(prefix, ref, reads):
-
-    t0 = tic(f"BSAlign POA {prefix}")
-
-    fasta = prefix + "_reads.fasta"
-
-    with open(fasta, "w") as f:
-        for i, r in enumerate(reads):
-
-            if len(r.query_sequence) < 50:
-                continue
-
-            f.write(f">{r.query_name}_{i}\n")
-            f.write(r.query_sequence + "\n")
-
-    cons = prefix + "_consensus.fa"
-
-    cmd = [
-        "bsalign",
-        "poa",
-        "-o", cons,
-        "-m", "overlap",
-        "-G", "realn=2,trigger=1",
-        fasta
-    ]
-
-    logging.info("Running: %s", " ".join(cmd))
-
-    subprocess.check_call(cmd)
-
-    mapped = []
-
-    sid = None
-    seq = []
-
-    with open(cons) as f:
-
-        for line in f:
-
-            if line.startswith(">"):
-
-                if sid is not None:
-
-                    mapped.append(
-                        map_consensus_sequence(
-                            sid,
-                            seq,
-                            ref,
-                            prefix
-                        )
-                    )
-
-                sid = line[1:].strip()
-                seq = []
-
-            else:
-                seq.append(line.strip())
-
-    if sid is not None:
-
-        mapped.append(
-            map_consensus_sequence(
-                sid,
-                seq,
-                ref,
-                prefix
-            )
-        )
-
-    toc(t0, f"BSAlign POA {prefix}")
-
-    return mapped
-
-
-def extract_refined_coords(bam_path, prefix):
-    bam=pysam.AlignmentFile(bam_path,'rb')
-    segs=[r for r in bam.fetch(until_eof=True) if not r.is_unmapped and not r.is_secondary]
-    bam.close()
-    segs.sort(key=lambda r:r.query_alignment_start)
-    out=[]
-    for a,b in zip(segs, segs[1:]):
-        ba=a.get_blocks()[-1][1]; bb=b.get_blocks()[0][0]
-        sa='-' if a.is_reverse else '+'; sb='-' if b.is_reverse else '+'
-        out.append((a.reference_name,ba,sa,b.reference_name,bb,sb))
-    sup=sum(1 for _ in open(prefix+"_reads.fasta") if _.startswith(">"))
-    return out, sup
-
-def process_all_connections(bam_path, ref, regs, cycles, outdir, sample):
-    t0 = tic("Processing POA connections")
-    ws=os.path.join(outdir,"poa_workspace"); os.makedirs(ws,exist_ok=True)
-    fn=os.path.join(outdir,f"09_{sample}_refined_connections.txt")
-    with open(fn,'w') as out:
-        out.write("junction\treads_support\n")
-        for cid,cyc in enumerate(cycles):
-            coords = [
-                (
-                    regs[node[0]][0],
-                    regs[node[0]][1],
-                    regs[node[0]][2],
-                    node[1]
-                )
-                for node in cyc
-            ]
-            for j in range(len(coords)-1):
-                c1, s1, e1, strand1 = coords[j]
-                c2, s2, e2, strand2 = coords[j+1]
-                #c1,s1,_=coords[j]; c2,s2,_=coords[j+1]
-                reads=extract_reads_for_poa(bam_path,c1,s1)+extract_reads_for_poa(bam_path,c2,s2)
-                if not reads: continue
-                prefix=os.path.join(ws,f"cycle{cid}_edge{j}")
-                for mb in poa_and_mapping(prefix, ref, reads):
-                    jcts,sup=extract_refined_coords(mb,prefix)
-                    for a,ea,sa,b,eb,sb in jcts:
-                        out.write(f"{a}:{ea}({sa})->{b}:{eb}({sb})\t{sup}\n")
-    logging.info(f"Wrote refined connections → {fn}")
-    toc(t0, "Processing POA connections")
