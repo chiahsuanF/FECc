@@ -1019,14 +1019,9 @@ def merge_small_cycles(
         "bigcycle_id\t"
         "total_size\t"
         "fragment_count\t"
-        "depth_consistent\t"
-        "amplicon_filter\t"
-        "depth_cutoff\t"
-        "low_depth_regions\t"
         "region_depths\t"
         "region_copy_numbers\t"
         "region_occurrences\t"
-        "depth_violations\t"
         "path\n"
     )
 
@@ -1099,22 +1094,6 @@ def merge_small_cycles(
                 if walk[0] == walk[-1]
                 else len(walk)
             ),
-            "depth_consistent": "yes" if valid else "no",
-            "amplicon_filter": amplicon_filter,
-            "depth_cutoff": (
-                "{:.2f}".format(cutoff)
-                if cutoff > 0
-                else "na"
-            ),
-            "low_depth_regions": (
-                format_region_values(
-                    low_regions,
-                    region_depths,
-                    numeric_format="{:.2f}"
-                )
-                if low_regions
-                else "none"
-            ),
             "region_depths": format_region_values(
                 used_regions,
                 region_depths,
@@ -1128,7 +1107,6 @@ def merge_small_cycles(
                 used_regions,
                 occurrences
             ),
-            "depth_violations": format_violations(violations),
             "path": " -> ".join(walk)
         })
 
@@ -1275,21 +1253,17 @@ def merge_small_cycles(
 
         for record in output_records:
             out.write(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
                     record["bigcycle_id"],
                     record["total_size"],
                     record["fragment_count"],
-                    record["depth_consistent"],
-                    record["amplicon_filter"],
-                    record["depth_cutoff"],
-                    record["low_depth_regions"],
                     record["region_depths"],
                     record["region_copy_numbers"],
                     record["region_occurrences"],
-                    record["depth_violations"],
                     record["path"]
                 )
             )
+
 
     logging.info(
         "Wrote %d depth-checked big cycles -> %s",
