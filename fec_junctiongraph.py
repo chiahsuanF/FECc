@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import os, logging
+import os, logging, pysam
 from collections import defaultdict
 from functools import lru_cache
 from fec_login import *
@@ -11,16 +11,70 @@ from fec_login import *
 # -----------------------
 
 MIN_SA_SUPPORT = 2
-MIN_SA_RATIO = 0.3#
+MIN_SA_RATIO = 0.05#
 
-def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
+# -----------------------------------
+# local depth: mean coverage of the given fragments
+# -----------------------------------
+SKIP_FLAGS = 0x4 | 0x100 | 0x200 | 0x400
+
+def aligned_bases(bam, chrom, s, e, min_mq):
+
+    total = 0
+
+    for read in bam.fetch(chrom, s, e):
+
+        if read.flag & SKIP_FLAGS or read.mapping_quality < min_mq:
+            continue
+
+        if read.reference_start >= s and read.reference_end <= e:
+            # M, =, X operations
+            stats = read.get_cigar_stats()[0]
+            total += int(stats[0] + stats[7] + stats[8])
+            continue
+
+        for bs, be in read.get_blocks():
+            if be <= s or bs >= e:
+                continue
+            total += min(be, e) - max(bs, s)
+
+    return total
+
+
+def fragment_depths(regs, indices, bam_path, min_mq=30):
+
+    depths = {}
+
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+
+        chrom_len = dict(zip(bam.references, bam.lengths))
+
+        for idx in sorted(indices):
+
+            chrom, start, end = regs[idx]
+
+            s = max(0, int(start))
+            e = min(int(end) + 1, chrom_len.get(chrom, 0))
+
+            if e <= s:
+                depths[idx] = 0.0
+            else:
+                depths[idx] = (
+                    aligned_bases(bam, chrom, s, e, min_mq) / (e - s)
+                )
+
+            logging.info(
+                f"Local depth fragment {idx} "
+                f"{chrom}:{start}-{end} "
+                f"(len={end - start + 1:,}) "
+                f"depth={depths[idx]:.2f}"
+            )
+
+    return depths
+
+
+def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
     t0 = tic("Building junction graph")
-    
-    if global_depth <= 0:
-        logging.error(
-            "Global depth must be > 0"
-        )
-        return defaultdict(dict)
 
     # -----------------------------------
     # region index
@@ -107,13 +161,22 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
     }
 
     # -----------------------------------
-    # threshold
+    # depth only for fragments on an edge that can pass
     # -----------------------------------
-    #read_thr = max(2, int(amp_thresh / 3))
+    used = {
+        i
+        for (i1, _, i2, _), sa_support in edge_support.items()
+        if sa_support > MIN_SA_SUPPORT
+        for i in (i1, i2)
+    }
 
-    # -----------------------------------
-    # write edges
-    # -----------------------------------
+    logging.info(
+        f"Computing local depth for {len(used):,} "
+        f"of {len(regs):,} fragments"
+    )
+
+    local_depth = fragment_depths(regs, used, bam_path, min_mq)
+
     fn = os.path.join(
         outdir,
         f"05_{sample}_graph_edges.txt"
@@ -132,7 +195,17 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
             if sa_support <= MIN_SA_SUPPORT:
                 continue
 
-            ratio = sa_support / global_depth
+            depth = min(local_depth[i1], local_depth[i2])
+            #depth = local_depth[i1]
+
+            if depth <= 0:
+                logging.warning(
+                    f"Skip edge {i1}{s1}->{i2}{s2}: "
+                    f"fragment depth is 0"
+                )
+                continue
+
+            ratio = sa_support / depth
 
             if ratio <= MIN_SA_RATIO:
                 continue
@@ -143,7 +216,7 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
                 f"{i1}{s1}\t"
                 f"{i2}{s2}\t"
                 f"{sa_support}\t"
-                f"{global_depth:.2f}\t"
+                f"{depth:.2f}\t"
                 f"{ratio:.3f}\n"
             )
 
@@ -154,7 +227,3 @@ def build_graph( regs, bps, outdir, sample, global_depth, min_mq=30):
     toc(t0, "Building junction graph")
 
     return graph
-
-    # -----------------------------------
-    # final graph
-    # -----------------------------------
