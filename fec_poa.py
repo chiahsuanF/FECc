@@ -7,16 +7,6 @@ from concurrent.futures import ThreadPoolExecutor
 # 8. POA & Refined Connections
 # -----------------------
 def parse_bigcycle_node(node):
-    """
-    Convert
-
-        chr2:100-200+
-
-    into
-
-        ("chr2", 100, 200, "+")
-    """
-
     node = node.strip()
 
     strand = node[-1]
@@ -33,7 +23,6 @@ def parse_bigcycle_node(node):
         int(end_text),
         strand
     )
-
 
 def build_junctions_from_bigcycles(summary_bigcycle_file):
 
@@ -119,17 +108,11 @@ def fetch_reads_cached(bam_path, chrom, pos, window=150):
         reads.append(r)
 
     bam.close()
-
-    # keep only top reads (VERY IMPORTANT for speed)
     reads = sorted(reads, key=lambda x: x.mapping_quality, reverse=True)[:50]
 
     return reads
 
 def run_bsalign_poa(junction_id, reads, ref, outdir):
-    """
-    Run BSAlign POA for one junction
-    """
-
     prefix = os.path.join(outdir, f"poa_{junction_id}")
 
     fasta = prefix + "_reads.fa"
