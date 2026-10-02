@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
 
+import glob
 import logging
 import math
+import os
 import pysam
+import numpy as np
+from scipy.optimize import Bounds, LinearConstraint, milp
 from collections import Counter, defaultdict
 
 def parse_nodes(path):
-    """
-    Parse a semicolon-separated cycle path.
-
-    Example:
-        A+;B-;C+;A+
-
-    Returns:
-        ["A+", "B-", "C+", "A+"]
-    """
     return [
         node.strip()
         for node in path.strip().split(";")
@@ -23,33 +18,12 @@ def parse_nodes(path):
 
 
 def strandless_node(node):
-    """
-    Return a region without its terminal strand symbol.
-
-    Example:
-        chr2:100-200+ -> chr2:100-200
-        chr2:100-200- -> chr2:100-200
-    """
     if node.endswith("+") or node.endswith("-"):
         return node[:-1]
 
     return node
 
-
-# ---------------------------------------------------------------
-# Selecting big cycles
-# ---------------------------------------------------------------
-#
-# fec_cycled's search never revisits a region inside one path, so a
-# small cycle always lists distinct regions. A larger cycle therefore
-# explains a smaller one whenever it covers all of the smaller one's
-# regions: the small cycle is a shortcut across the same structure, not
-# separate evidence. The big cycle for an event is the small cycle whose
-# region set no other cycle covers.
-
-
 def cycle_regions(cycle):
-    """Return the set of strandless regions a cycle visits."""
     return {
         strandless_node(node)
         for node in cycle["nodes"][:-1]
@@ -57,14 +31,6 @@ def cycle_regions(cycle):
 
 
 def select_big_cycles(cycles):
-    """
-    Keep the cycles whose region set is not contained in another's.
-
-    Returns a list of (cycle, subsumed_cycles) pairs, ordered by
-    descending region count so the largest reconstruction comes first.
-    Ties on an identical region set keep the cycle with more fragments,
-    then the lower id, so the choice does not depend on input order.
-    """
     if not cycles:
         return []
 
@@ -114,33 +80,10 @@ def select_big_cycles(cycles):
         for index, subsumed in selected
     ]
 
-
-# ---------------------------------------------------------------
-# Segment-end breakpoint graph
-# ---------------------------------------------------------------
-#
-# A segment is a strandless genomic region with two ends, L and R, in
-# reference orientation. Traversing it as "+" enters L and exits R;
-# traversing as "-" enters R and exits L.
-#
-# A junction is the unordered pair of segment ends that a split read
-# joins. Because the pair is unordered, the same physical junction
-# canonicalizes identically regardless of which direction a cycle
-# happens to traverse it: A+ -> B+ and B- -> A- both yield
-# {(A, R), (B, L)}. That is what lets one molecule contain a segment in
-# both orientations, which is what an inversion is.
-
 LEFT = "L"
 RIGHT = "R"
 
-
 def split_strand(node):
-    """
-    Split a strand-aware node into its region and strand.
-
-    Example:
-        chr2:100-200+ -> ("chr2:100-200", "+")
-    """
     if node.endswith("+") or node.endswith("-"):
         return node[:-1], node[-1]
 
@@ -148,21 +91,14 @@ def split_strand(node):
 
 
 def entry_end(strand):
-    """Return the end a segment is entered through."""
     return LEFT if strand == "+" else RIGHT
 
 
 def exit_end(strand):
-    """Return the end a segment is left through."""
     return RIGHT if strand == "+" else LEFT
 
 
 def cycle_junctions(nodes):
-    """
-    Convert a closed cycle path into its canonical junctions.
-
-    Each junction is a sorted pair of (region, end) tuples.
-    """
     junctions = []
 
     for position in range(len(nodes) - 1):
@@ -180,14 +116,6 @@ def cycle_junctions(nodes):
 
 
 def build_region_groups(cycles):
-    """
-    Group cycles that share at least one genomic region.
-
-    Cycles sharing a region may be one molecule that traverses the
-    shared region more than once, so they are considered together.
-    Whether that reuse is real is decided by the copy-number check in
-    reuse_supported, not here.
-    """
     owners = defaultdict(set)
 
     for index, cycle in enumerate(cycles):
@@ -222,40 +150,7 @@ def build_region_groups(cycles):
 
     return [members for _, members in sorted(groups.items())]
 
-
-# ---------------------------------------------------------------
-# Depth filtering
-# ---------------------------------------------------------------
-#
-# The regions of one amplicon are carried at a similar, high copy
-# number. A region sitting at near-germline depth that a junction
-# happens to attach to the amplicon is more likely a mapping artefact or
-# an unrelated low-level rearrangement than part of the same molecule.
-#
-# Sorted region depths within one connected group therefore tend to fall
-# into a low shoulder and an amplified core with a visible fold gap
-# between them. The cutoff goes at the first gap wide enough to count,
-# placed at the geometric mean of the two depths it separates.
-#
-# A region cannot be dropped from a reconstruction on its own: removing
-# it leaves its two segment ends unbalanced. The filter therefore works
-# on whole small cycles, each of which is closed, so whatever remains
-# still balances.
-
-
 def estimate_depth_cutoff(depths, minimum_fold_gap=1.4):
-    """
-    Place a depth cutoff at the widest gap in sorted depths.
-
-    A gap has to leave at least two regions above it to be usable, since
-    fewer than two cannot form a molecule. That also keeps the cutoff
-    off the top of the range, where a single hyper-amplified region
-    would otherwise strand the rest of its own amplicon below the line.
-
-    Returns 0.0, meaning keep every region, when there are too few
-    depths to read a gap from or when no gap is wide enough. A group
-    whose depths climb smoothly is one depth level, not two.
-    """
     values = sorted(
         float(depth)
         for depth in depths
@@ -286,23 +181,12 @@ def estimate_depth_cutoff(depths, minimum_fold_gap=1.4):
 
     return math.sqrt(widest[1] * widest[2])
 
-
 def partition_group_by_depth(
     cycles,
     group,
     region_depths,
     minimum_fold_gap=1.4
 ):
-    """
-    Split a group's cycles into the amplified core and the low-depth
-    rest.
-
-    A cycle joins the low-depth set when any region it visits sits below
-    the cutoff, because the path through that region is exactly what the
-    depth does not support. A region with no depth counts as below.
-
-    Returns (core, low, cutoff, low_regions).
-    """
     group_regions = set()
 
     for index in group:
@@ -344,12 +228,6 @@ def partition_group_by_depth(
 
 
 def reuse_supported(multiplicities, copy_numbers, copy_tolerance=0):
-    """
-    Check that depth allows each segment to be traversed as often as a
-    merged molecule would require.
-
-    Returns (supported, violations).
-    """
     violations = {}
 
     for region, needed in sorted(multiplicities.items()):
@@ -365,14 +243,6 @@ def reuse_supported(multiplicities, copy_numbers, copy_tolerance=0):
 
 
 def junction_multiplicities(cycles, group):
-    """
-    Count how many times each junction is used by a group of cycles.
-
-    A junction listed by two different cycles describes one adjacency,
-    not two, so counts are taken as the highest per-cycle count rather
-    than summed. A cycle that genuinely uses a junction twice still
-    contributes two.
-    """
     counts = {}
 
     for index in group:
@@ -383,18 +253,6 @@ def junction_multiplicities(cycles, group):
 
 
 def segment_multiplicities(junction_counts):
-    """
-    Derive how many times each segment must be traversed.
-
-    A closed molecule alternates segment and junction, so a segment's
-    traversal count equals the junction count at each of its two ends.
-
-    Returns:
-        multiplicities  region -> traversal count
-        imbalances      (region, left_count, right_count) for segments
-                        whose ends disagree, which no single molecule
-                        can explain
-    """
     incidence = defaultdict(int)
 
     for (end_a, end_b), count in junction_counts.items():
@@ -417,18 +275,10 @@ def segment_multiplicities(junction_counts):
 
 
 def opposite_end(end):
-    """Return the other end of the same segment."""
     return RIGHT if end == LEFT else LEFT
 
 
 def build_junction_uses(junction_counts):
-    """
-    Expand junction multiplicities into individual uses.
-
-    Returns:
-        uses    use_id -> (end_a, end_b)
-        slots   segment end -> list of use_ids arriving there
-    """
     uses = []
     slots = defaultdict(list)
 
@@ -443,21 +293,12 @@ def build_junction_uses(junction_counts):
 
 
 def other_endpoint(uses, use_id, end):
-    """Return the end at the far side of a junction use."""
     end_a, end_b = uses[use_id]
 
     return end_b if end_a == end else end_a
 
 
 def initial_transitions(slots, multiplicities):
-    """
-    Pair every left-end slot of a segment with a right-end slot.
-
-    Each pair is one traversal of that segment: it says which junction
-    use the walk leaves by, having arrived on the other one. Any pairing
-    is a valid starting point; merge_transition_walks then re-pairs to
-    splice separate walks together.
-    """
     transitions = {}
 
     for region in sorted(multiplicities):
@@ -475,19 +316,6 @@ def initial_transitions(slots, multiplicities):
 
 
 def decompose_transition_walks(uses, transitions):
-    """
-    Split every junction use into closed alternating walks.
-
-    The walk arrives at a segment end along one junction use, traverses
-    that segment to its far end, and leaves along the use the transition
-    system pairs it with. A junction use is crossed once no matter which
-    of its two ends the walk happens to enter from, so consumption is
-    tracked per use: entering from the other end would only retrace the
-    same molecule in reverse.
-
-    Returns a list of walks, each a list of
-    (region, strand, left_use, right_use) traversals.
-    """
     walks = []
     consumed = set()
 
@@ -530,16 +358,6 @@ def decompose_transition_walks(uses, transitions):
 
 
 def merge_transition_walks(uses, transitions):
-    """
-    Re-pair transitions until every junction use lies on one walk.
-
-    Two walks that both traverse the same segment are spliced by
-    swapping that segment's pairing, which is the constructive half of
-    Kotzig's theorem. Each splice removes one walk, so this terminates.
-
-    Returns the single remaining walk, or None when the segment ends
-    cannot be joined into one molecule.
-    """
     while True:
         walks = decompose_transition_walks(uses, transitions)
 
@@ -587,13 +405,6 @@ def merge_transition_walks(uses, transitions):
 
 
 def reconstruct_big_cycle(junction_counts, multiplicities):
-    """
-    Reconstruct one closed molecule from a group's junctions.
-
-    Returns strand-aware region tokens with the first token repeated to
-    mark the closure, or [] when the junctions cannot form a single
-    molecule.
-    """
     if not junction_counts or not multiplicities:
         return []
 
@@ -616,15 +427,155 @@ def reconstruct_big_cycle(junction_counts, multiplicities):
 
     return path + [path[0]]
 
+def solve_appearance_counts(
+    junctions,
+    end_support,
+    region_depths,
+    min_support=3,
+    max_uses=6,
+    target_cap_factor=2.0
+):
+    import numpy as np
+    from scipy.optimize import Bounds, LinearConstraint, milp
+
+    has_support = bool(end_support)
+
+    candidates = sorted(
+        junction
+        for junction in set(junctions)
+        if not has_support or end_support.get(junction, 0) >= min_support
+    )
+
+    if not candidates:
+        return None, {}
+
+    regions = sorted({
+        region
+        for junction in candidates
+        for region, _ in junction
+    })
+
+    depths = {
+        region: region_depths.get(region, 0.0)
+        for region in regions
+    }
+
+    positive = [depth for depth in depths.values() if depth > 0]
+    unit = min(positive) if positive else 1.0
+
+    raw_targets = {
+        region: (depth / unit if depth > 0 else 1.0)
+        for region, depth in depths.items()
+    }
+
+    cap = target_cap_factor * float(np.median(list(raw_targets.values())))
+
+    targets = {
+        region: min(target, cap)
+        for region, target in raw_targets.items()
+    }
+
+    junction_count = len(candidates)
+    region_count = len(regions)
+    row_of = {region: index for index, region in enumerate(regions)}
+
+    # Variables: x_j, then the scale v, then e_j per junction, then d_r
+    # per region.
+    scale_column = junction_count
+    junction_error = junction_count + 1
+    region_error = junction_error + junction_count
+    variable_count = region_error + region_count
+
+    balance = np.zeros((region_count, variable_count))
+    appearance = np.zeros((region_count, variable_count))
+
+    for column, junction in enumerate(candidates):
+        for region, end in junction:
+            row = row_of[region]
+
+            if end == LEFT:
+                balance[row, column] += 1
+                appearance[row, column] += 1
+            else:
+                balance[row, column] -= 1
+
+    rows = []
+    upper = []
+
+    if has_support:
+        # |x_j - v * reads_j| <= e_j
+        for column, junction in enumerate(candidates):
+            reads = end_support[junction]
+
+            for sign in (1, -1):
+                row = np.zeros(variable_count)
+                row[column] = sign
+                row[scale_column] = -sign * reads
+                row[junction_error + column] = -1
+                rows.append(row)
+                upper.append(0.0)
+
+    # |t_r - target_r| <= d_r
+    for region, row_index in row_of.items():
+        over = appearance[row_index].copy()
+        over[region_error + row_index] = -1
+        rows.append(over)
+        upper.append(targets[region])
+
+        under = -appearance[row_index]
+        under[region_error + row_index] = -1
+        rows.append(under)
+        upper.append(-targets[region])
+
+    used = np.zeros(variable_count)
+    used[:junction_count] = 1
+
+    cost = np.zeros(variable_count)
+    cost[junction_error:region_error] = 1
+    cost[region_error:] = 1
+
+    lower_bounds = np.zeros(variable_count)
+    upper_bounds = np.full(variable_count, np.inf)
+    upper_bounds[:junction_count] = max_uses
+
+    if not has_support:
+        # Without reads to weigh them, every proposed junction is taken
+        # as real.
+        lower_bounds[:junction_count] = 1
+
+    integrality = np.zeros(variable_count)
+    integrality[:junction_count] = 1
+
+    result = milp(
+        cost,
+        constraints=[
+            LinearConstraint(balance, 0, 0),
+            LinearConstraint(np.array(rows), -np.inf, upper),
+            LinearConstraint(used, 1, np.inf),
+        ],
+        integrality=integrality,
+        bounds=Bounds(lower_bounds, upper_bounds)
+    )
+
+    if not result.success:
+        return None, targets
+
+    counts = {
+        junction: int(round(value))
+        for junction, value in zip(candidates, result.x[:junction_count])
+    }
+
+    return (
+        {
+            junction: count
+            for junction, count in counts.items()
+            if count > 0
+        },
+        targets
+    )
+
 
 def path_size(path):
-    """
-    Calculate the summed fragment length of an Euler walk.
-
-    The final node is excluded when it repeats the first node.
-    Repeated internal nodes are counted repeatedly because they
-    represent repeated traversal/copy usage.
-    """
     if not path:
         return 0
 
@@ -653,15 +604,6 @@ def path_size(path):
     return total
 
 def parse_region(node):
-    """
-    Parse a strand-aware node.
-
-    Example:
-        chr2:11551952-12459661+
-
-    Returns:
-        ("chr2", 11551952, 12459661)
-    """
     region = strandless_node(node)
 
     chrom, coordinates = region.rsplit(":", 1)
@@ -679,12 +621,6 @@ def calculate_region_depth(
     node,
     min_mapping_quality=30
 ):
-    """
-    Calculate average read depth across a genomic region.
-
-    Zero-coverage positions are included because total aligned depth
-    is divided by the full region length.
-    """
     chrom, start, end = parse_region(node)
 
     region_length = end - start + 1
@@ -720,14 +656,6 @@ def calculate_copy_number(
     region_depth,
     baseline_depth
 ):
-    """
-    Estimate integer copy number from region depth.
-
-    Examples:
-        region depth 18, baseline 18 -> CN 1
-        region depth 37, baseline 18 -> CN 2
-        region depth 74, baseline 18 -> CN 4
-    """
     if baseline_depth <= 0:
         raise ValueError(
             "baseline_depth must be greater than zero"
@@ -748,10 +676,6 @@ def calculate_region_copy_numbers(
     baseline_depth,
     min_mapping_quality=0
 ):
-    """
-    Calculate depth and estimated copy number once for every unique
-    genomic region found in the small cycles.
-    """
     all_regions = {
         strandless_node(node)
         for cycle in cycles
@@ -812,12 +736,6 @@ def calculate_region_copy_numbers(
 
 
 def count_walk_regions(walk):
-    """
-    Count how many times each strandless genomic region occurs in an
-    Euler walk.
-
-    The repeated closing node is excluded.
-    """
     if not walk:
         return Counter()
 
@@ -837,15 +755,6 @@ def validate_walk_depth(
     copy_numbers,
     copy_tolerance=0
 ):
-    """
-    Compare Euler-walk region occurrences with depth-estimated copy
-    numbers.
-
-    Returns:
-        valid
-        occurrences
-        violations
-    """
     occurrences = count_walk_regions(walk)
     violations = {}
 
@@ -866,9 +775,6 @@ def validate_walk_depth(
 
 
 def load_cycles(summary_file):
-    """
-    Read small cycles from summary.txt.
-    """
     cycles = []
 
     with open(summary_file, "r") as handle:
@@ -933,9 +839,6 @@ def format_region_values(
     values,
     numeric_format=None
 ):
-    """
-    Format a region-value dictionary for output.
-    """
     result = []
 
     for region in sorted(regions):
@@ -957,9 +860,6 @@ def format_region_values(
 
 
 def format_violations(violations):
-    """
-    Format depth-copy-number violations for output.
-    """
     if not violations:
         return "none"
 
@@ -974,6 +874,514 @@ def format_violations(violations):
         )
     )
 
+def build_region_index(regions):
+    per_chromosome = defaultdict(list)
+
+    for region in regions:
+        chrom, start, end = parse_region(region)
+        per_chromosome[chrom].append((start, end, region))
+
+    for intervals in per_chromosome.values():
+        intervals.sort()
+
+    return per_chromosome
+
+
+def find_containing_region(region_index, chrom, position):
+    intervals = region_index.get(chrom)
+
+    if not intervals:
+        return None
+
+    low = 0
+    high = len(intervals) - 1
+
+    while low <= high:
+        middle = (low + high) // 2
+
+        start, end, region = intervals[middle]
+
+        if start <= position <= end:
+            return region
+
+        if position < start:
+            high = middle - 1
+        else:
+            low = middle + 1
+
+    return None
+
+
+def count_junction_support(
+    breakpoints,
+    regions,
+    min_mapping_quality=30
+):
+    region_index = build_region_index(regions)
+
+    reads = defaultdict(set)
+
+    for breakpoint in breakpoints:
+        (
+            qname,
+            chrom_1, position_1, quality_1, _strand_1,
+            chrom_2, position_2, quality_2, _strand_2
+        ) = breakpoint
+
+        if quality_1 < min_mapping_quality:
+            continue
+
+        if quality_2 < min_mapping_quality:
+            continue
+
+        region_1 = find_containing_region(
+            region_index,
+            chrom_1,
+            position_1
+        )
+
+        if region_1 is None:
+            continue
+
+        region_2 = find_containing_region(
+            region_index,
+            chrom_2,
+            position_2
+        )
+
+        if region_2 is None:
+            continue
+
+        if region_1 == region_2:
+            continue
+
+        reads[tuple(sorted((region_1, region_2)))].add(qname)
+
+    return {
+        pair: len(qnames)
+        for pair, qnames in reads.items()
+    }
+
+
+def nearest_end(region, position):
+    _, start, end = parse_region(region)
+
+    return LEFT if position - start <= end - position else RIGHT
+
+
+def collect_end_junction_reads(
+    breakpoints,
+    regions,
+    min_mapping_quality=30
+):
+    region_index = build_region_index(regions)
+
+    reads = defaultdict(set)
+
+    for breakpoint in breakpoints:
+        (
+            qname,
+            chrom_1, position_1, quality_1, _strand_1,
+            chrom_2, position_2, quality_2, _strand_2
+        ) = breakpoint
+
+        if quality_1 < min_mapping_quality:
+            continue
+
+        if quality_2 < min_mapping_quality:
+            continue
+
+        region_1 = find_containing_region(
+            region_index,
+            chrom_1,
+            position_1
+        )
+
+        if region_1 is None:
+            continue
+
+        region_2 = find_containing_region(
+            region_index,
+            chrom_2,
+            position_2
+        )
+
+        if region_2 is None:
+            continue
+
+        if region_1 == region_2:
+            continue
+
+        junction = tuple(sorted((
+            (region_1, nearest_end(region_1, position_1)),
+            (region_2, nearest_end(region_2, position_2))
+        )))
+
+        reads[junction].add(qname)
+
+    return reads
+
+
+def count_end_junction_support(
+    breakpoints,
+    regions,
+    min_mapping_quality=30
+):
+    return {
+        junction: len(qnames)
+        for junction, qnames in collect_end_junction_reads(
+            breakpoints,
+            regions,
+            min_mapping_quality
+        ).items()
+    }
+
+SOFT_CLIP = 4
+HARD_CLIP = 5
+
+
+def alignment_breakpoint(alignment):
+    cigar = alignment.cigartuples
+
+    if not cigar:
+        return None
+
+    def leading_clip(operations):
+        total = 0
+
+        for operation, length in operations:
+            if operation not in (SOFT_CLIP, HARD_CLIP):
+                break
+            total += length
+
+        return total
+
+    left = leading_clip(cigar)
+    right = leading_clip(reversed(cigar))
+
+    start = alignment.reference_start + 1
+
+    if left > right:
+        return start
+
+    if right > left:
+        return start + alignment.reference_length
+
+    return None
+
+
+def exact_junction_breakpoints(
+    bam_path,
+    junctions,
+    junction_reads,
+    min_mapping_quality=30
+):
+    wanted = defaultdict(set)
+
+    for junction in junctions:
+        for region, _ in junction:
+            wanted[region] |= junction_reads.get(junction, set())
+
+    positions = defaultdict(Counter)
+
+    bam = pysam.AlignmentFile(bam_path, "rb")
+
+    try:
+        for region, qnames in sorted(wanted.items()):
+            if not qnames:
+                continue
+
+            chrom, start, end = parse_region(region)
+
+            per_read = defaultdict(list)
+
+            try:
+                alignments = bam.fetch(chrom, max(0, start - 1), end)
+
+                for alignment in alignments:
+                    if alignment.query_name not in qnames:
+                        continue
+
+                    if (
+                        alignment.is_unmapped
+                        or alignment.is_secondary
+                        or alignment.is_qcfail
+                        or alignment.mapping_quality < min_mapping_quality
+                    ):
+                        continue
+
+                    position = alignment_breakpoint(alignment)
+
+                    if position is not None and start <= position <= end + 1:
+                        per_read[alignment.query_name].append(position)
+
+            except ValueError:
+                logging.warning(
+                    "Could not fetch %s for exact breakpoints",
+                    region
+                )
+                continue
+
+            for junction in junctions:
+                if region not in (junction[0][0], junction[1][0]):
+                    continue
+
+                for qname in junction_reads.get(junction, set()):
+                    for position in per_read.get(qname, []):
+                        positions[(junction, region)][position] += 1
+
+    finally:
+        bam.close()
+
+    return {
+        key: "{}:{}".format(
+            parse_region(key[1])[0],
+            min(
+                counter,
+                key=lambda position: (-counter[position], position)
+            )
+        )
+        for key, counter in positions.items()
+        if counter
+    }
+
+
+def format_path_breakpoints(walk, breakpoints):
+    a_side = []
+    b_side = []
+
+    for position in range(len(walk) - 1):
+        junction = cycle_junctions([walk[position], walk[position + 1]])[0]
+
+        a_side.append(breakpoints.get(
+            (junction, strandless_node(walk[position])), "NA"
+        ))
+        b_side.append(breakpoints.get(
+            (junction, strandless_node(walk[position + 1])), "NA"
+        ))
+
+    return ",".join(a_side), ",".join(b_side)
+
+
+def load_breakpoints(path):
+    breakpoints = []
+
+    with open(path, "r") as handle:
+        header = handle.readline()
+
+        if not header:
+            return breakpoints
+
+        for line_number, line in enumerate(handle, start=2):
+            fields = line.rstrip("\n").split("\t")
+
+            if len(fields) < 9:
+                continue
+
+            try:
+                breakpoints.append((
+                    fields[0],
+                    fields[1],
+                    int(fields[2]),
+                    int(fields[3]),
+                    fields[4],
+                    fields[5],
+                    int(fields[6]),
+                    int(fields[7]),
+                    fields[8]
+                ))
+            except ValueError:
+                logging.warning(
+                    "Skipping breakpoint line %d with invalid numeric fields",
+                    line_number
+                )
+
+    return breakpoints
+
+
+def find_breakpoint_table(outfile):
+    directory = os.path.dirname(os.path.abspath(outfile))
+
+    candidates = sorted(
+        glob.glob(os.path.join(directory, "03_*_breakpoints.txt"))
+    )
+
+    if not candidates:
+        return None
+
+    if len(candidates) > 1:
+        logging.warning(
+            "Several breakpoint tables in %s; using %s",
+            directory,
+            candidates[0]
+        )
+
+    return candidates[0]
+
+
+def calculate_path_junction_supports(
+    walk,
+    end_support
+):
+    supports = []
+
+    for position in range(len(walk) - 1):
+        left = walk[position]
+        right = walk[position + 1]
+
+        junction = cycle_junctions([left, right])[0]
+
+        supports.append(
+            "{}->{}={}".format(
+                left,
+                right,
+                end_support.get(junction, 0)
+            )
+        )
+
+    return ",".join(supports)
+
+def find_low_depth_variants(
+    base_walk,
+    low_regions,
+    end_support,
+    min_support=3,
+    max_uses=6
+):
+    base_regions = {strandless_node(node) for node in base_walk}
+
+    strong = {
+        junction: reads
+        for junction, reads in end_support.items()
+        if reads >= min_support
+    }
+
+    neighbours = defaultdict(set)
+
+    for (end_a, end_b) in strong:
+        if end_a[0] != end_b[0]:
+            neighbours[end_a[0]].add(end_b[0])
+            neighbours[end_b[0]].add(end_a[0])
+
+    remaining = {
+        region
+        for region in low_regions
+        if region not in base_regions
+    }
+
+    low_sets = []
+
+    while remaining:
+        seed = min(remaining)
+        component = {seed}
+        frontier = [seed]
+
+        while frontier:
+            region = frontier.pop()
+
+            for other in neighbours[region]:
+                if other in remaining and other not in component:
+                    component.add(other)
+                    frontier.append(other)
+
+        remaining -= component
+
+        if any(neighbours[region] & base_regions for region in component):
+            low_sets.append(component)
+
+    base_counts = Counter(cycle_junctions(base_walk))
+    variants = []
+
+    for low_set in low_sets:
+        allowed = base_regions | low_set
+
+        candidates = sorted(
+            junction
+            for junction in strong
+            if all(region in allowed for region, _ in junction)
+        )
+
+        regions = sorted({
+            region
+            for junction in candidates
+            for region, _ in junction
+        })
+
+        if not candidates or not low_set <= set(regions):
+            logging.info(
+                "No supported junctions join low-depth region(s) %s",
+                ",".join(sorted(low_set))
+            )
+            continue
+
+        row_of = {region: index for index, region in enumerate(regions)}
+
+        balance = np.zeros((len(regions), len(candidates)))
+        appearance = np.zeros((len(regions), len(candidates)))
+
+        for column, junction in enumerate(candidates):
+            for region, end in junction:
+                if end == LEFT:
+                    balance[row_of[region], column] += 1
+                    appearance[row_of[region], column] += 1
+                else:
+                    balance[row_of[region], column] -= 1
+
+        low_rows = [row_of[region] for region in sorted(low_set)]
+
+        most = max(strong[junction] for junction in candidates)
+
+        cost = np.array([
+            1.0 + 1e-3 * (1.0 - strong[junction] / most)
+            for junction in candidates
+        ])
+
+        result = milp(
+            cost,
+            constraints=[
+                LinearConstraint(balance, 0, 0),
+                LinearConstraint(appearance[low_rows], 1, 1),
+            ],
+            integrality=np.ones(len(candidates)),
+            bounds=Bounds(0, max_uses)
+        )
+
+        if not result.success:
+            logging.info(
+                "No closed add-on through low-depth region(s) %s",
+                ",".join(sorted(low_set))
+            )
+            continue
+
+        added = {
+            junction: int(round(value))
+            for junction, value in zip(candidates, result.x)
+            if round(value) > 0
+        }
+
+        junction_counts = Counter(base_counts)
+        junction_counts.update(added)
+
+        multiplicities, imbalances = segment_multiplicities(junction_counts)
+
+        walk = (
+            []
+            if imbalances
+            else reconstruct_big_cycle(dict(junction_counts), multiplicities)
+        )
+
+        if len(walk) < 2:
+            logging.info(
+                "Add-on through %s does not join the big cycle into one "
+                "molecule",
+                ",".join(sorted(low_set))
+            )
+            continue
+
+        variants.append((walk, low_set, added))
+
+    return variants
+
 
 def merge_small_cycles(
     summary_file,
@@ -984,28 +1392,12 @@ def merge_small_cycles(
     copy_tolerance=0,
     require_depth_support=False,
     apply_depth_filter=True,
-    depth_filter_fold_gap=1.4
+    depth_filter_fold_gap=1.4,
+    breakpoints=None,
+    junction_mapping_quality=30,
+    min_junction_support=3,
+    low_depth_variants=True
 ):
-    """
-    Build big ecDNA cycles from the small cycles in summary.txt.
-
-    A small cycle whose regions are all covered by a larger cycle is a
-    shortcut across the same structure rather than separate evidence, so
-    the big cycle for an event is the small cycle no other cycle covers.
-    The cycles it explains are listed alongside it.
-
-    Within a group of connected cycles, depth separates the amplified
-    core from regions carried at near-germline level. A cycle that
-    visits a below-cutoff region is written on its own and marked
-    low_depth instead of being merged into the core molecule, so the
-    evidence stays in the output; apply_depth_filter=False turns that
-    off and merges the group as a whole.
-
-    Region depth is read from the BAM and compared with how often each
-    region is traversed. With require_depth_support=False every cycle is
-    written and marked depth-consistent or not; with True, the
-    depth-inconsistent ones are omitted.
-    """
     if baseline_depth <= 0:
         raise ValueError(
             "baseline_depth must be greater than zero"
@@ -1021,8 +1413,10 @@ def merge_small_cycles(
         "fragment_count\t"
         "region_depths\t"
         "region_copy_numbers\t"
-        "region_occurrences\t"
-        "path\n"
+        "junction_supports\t"
+        "path\t"
+        "A_breakpoint\t"
+        "B_breakpoint\n"
     )
 
     if not cycles:
@@ -1045,31 +1439,59 @@ def merge_small_cycles(
         )
     )
 
-    chosen = select_big_cycles(cycles)
+    cycle_region_set = {
+        strandless_node(node)
+        for cycle in cycles
+        for node in cycle["nodes"][:-1]
+    }
 
-    survivors = [cycle for cycle, _ in chosen]
+    if not breakpoints:
+        table = find_breakpoint_table(outfile)
 
-    covered_by = {
-        index: [other["id"] for other in subsumed]
-        for index, (_, subsumed) in enumerate(chosen)
+        if table is None:
+            logging.warning(
+                "No breakpoints passed in and no 03_*_breakpoints.txt "
+                "beside %s; every junction support will report as 0",
+                outfile
+            )
+            breakpoints = []
+        else:
+            logging.info(
+                "No breakpoints passed in; reading them from %s",
+                table
+            )
+            breakpoints = load_breakpoints(table)
+
+    junction_reads = collect_end_junction_reads(
+        breakpoints=breakpoints,
+        regions=cycle_region_set,
+        min_mapping_quality=junction_mapping_quality
+    )
+
+    end_support = {
+        junction: len(qnames)
+        for junction, qnames in junction_reads.items()
     }
 
     logging.info(
-        "Selected %d covering cycle(s) from %d small cycle(s)",
-        len(survivors),
-        len(cycles)
+        "Counted split-read support for %d segment-end junction(s) "
+        "among %d cycle region(s) from %d breakpoint(s) at MQ >= %d",
+        len(end_support),
+        len(cycle_region_set),
+        len(breakpoints),
+        junction_mapping_quality
     )
 
-    output_records = []
+    if breakpoints and not end_support:
+        logging.warning(
+            "No breakpoint joins two cycle regions: the breakpoint table "
+            "and the cycle coordinates are probably from different runs"
+        )
 
-    def add_record(
-        walk,
-        source_ids,
-        cutoff=0.0,
-        amplicon_filter="core",
-        low_regions=()
-    ):
-        """Depth-check one big cycle and queue it for output."""
+    output_records = []
+    held_back = []
+
+    def add_record(walk, source_ids, cutoff=0.0):
         valid, occurrences, violations = validate_walk_depth(
             walk=walk,
             copy_numbers=copy_numbers,
@@ -1085,6 +1507,11 @@ def merge_small_cycles(
             return
 
         used_regions = sorted(occurrences)
+
+        junction_supports = calculate_path_junction_supports(
+            walk=walk,
+            end_support=end_support
+        )
 
         output_records.append({
             "bigcycle_id": len(output_records) + 1,
@@ -1103,108 +1530,159 @@ def merge_small_cycles(
                 used_regions,
                 copy_numbers
             ),
-            "region_occurrences": format_region_values(
-                used_regions,
-                occurrences
-            ),
+            "junction_supports": junction_supports,
             "path": " -> ".join(walk)
         })
 
-    def sources_for(index):
-        """A survivor's own id plus the ids of the cycles it covers."""
-        return [survivors[index]["id"]] + covered_by[index]
+    def ids_of(group):
+        return [cycles[index]["id"] for index in group]
+
+    def supported_cycles(group):
+        kept = []
+
+        for index in group:
+            cycle = cycles[index]
+
+            weak = [
+                junction
+                for junction in cycle["junctions"]
+                if end_support.get(junction, 0) < min_junction_support
+            ]
+
+            if end_support and weak:
+                logging.info(
+                    "Dropping cycle %s: %d junction(s) below %d split "
+                    "reads: %s",
+                    cycle["id"],
+                    len(weak),
+                    min_junction_support,
+                    "; ".join(
+                        "{}{}~{}{}={}".format(
+                            end_a[0], end_a[1], end_b[0], end_b[1],
+                            end_support.get((end_a, end_b), 0)
+                        )
+                        for end_a, end_b in weak
+                    )
+                )
+                continue
+
+            kept.append(cycle)
+
+        return kept
 
     def add_separately(group, cutoff, reason):
-        """Report a group's cycles as individual big cycles."""
+        chosen = select_big_cycles(supported_cycles(group))
+
         logging.info(
             "Reporting cycle(s) %s separately: %s",
-            ",".join(survivors[index]["id"] for index in group),
+            ",".join(cycle["id"] for cycle, _ in chosen),
             reason
         )
 
-        for index in group:
+        for cycle, subsumed in chosen:
             add_record(
-                survivors[index]["nodes"],
-                sources_for(index),
+                cycle["nodes"],
+                [cycle["id"]] + [other["id"] for other in subsumed],
                 cutoff=cutoff
             )
 
     def merge_group(group, cutoff):
-        """Reconstruct one connected set of cycles as one molecule."""
         if len(group) == 1:
-            add_record(
-                survivors[group[0]]["nodes"],
-                sources_for(group[0]),
-                cutoff=cutoff
-            )
+            for cycle in supported_cycles(group):
+                add_record(
+                    cycle["nodes"],
+                    ids_of(group),
+                    cutoff=cutoff
+                )
             return
 
-        # Cycles sharing a region may be one molecule that traverses the
-        # shared region more than once.
-        junction_counts = junction_multiplicities(survivors, group)
+        proposed = {
+            junction
+            for index in group
+            for junction in cycles[index]["junctions"]
+        }
+
+        group_regions = set()
+        for index in group:
+            group_regions |= cycle_regions(cycles[index])
+
+        proposed |= {
+            junction
+            for junction, reads in end_support.items()
+            if reads >= min_junction_support
+            and all(region in group_regions for region, _ in junction)
+        }
+
+        junction_counts, targets = solve_appearance_counts(
+            junctions=proposed,
+            end_support=end_support,
+            region_depths=region_depths,
+            min_support=min_junction_support
+        )
+
+        if not junction_counts:
+            add_separately(
+                group,
+                cutoff,
+                "no balanced use of the supported junctions exists"
+            )
+            return
 
         multiplicities, imbalances = segment_multiplicities(
             junction_counts
         )
 
-        if imbalances:
-            add_separately(
-                group,
-                cutoff,
-                "segment ends do not balance ({})".format(
-                    ", ".join(
-                        "{} has {} junction(s) on its left end "
-                        "and {} on its right".format(region, left, right)
-                        for region, left, right in imbalances
-                    )
-                )
-            )
-            return
-
-        supported, shortfall = reuse_supported(
-            multiplicities,
-            copy_numbers,
-            copy_tolerance
+        walk = (
+            []
+            if imbalances
+            else reconstruct_big_cycle(junction_counts, multiplicities)
         )
-
-        if not supported:
-            add_separately(
-                group,
-                cutoff,
-                "depth does not support the reuse this merge needs "
-                "({})".format(format_violations(shortfall))
-            )
-            return
-
-        walk = reconstruct_big_cycle(junction_counts, multiplicities)
 
         if len(walk) < 2:
             add_separately(
                 group,
                 cutoff,
-                "the junctions do not form a single closed molecule"
+                "the chosen junctions do not form a single closed molecule"
             )
             return
 
-        source_ids = [
-            source
-            for index in group
-            for source in sources_for(index)
-        ]
+        unused = sorted(proposed - set(junction_counts))
+
+        if unused:
+            logging.info(
+                "Not using %d proposed junction(s): %s",
+                len(unused),
+                "; ".join(
+                    "{}{}~{}{}={}".format(
+                        end_a[0], end_a[1], end_b[0], end_b[1],
+                        end_support.get((end_a, end_b), 0)
+                    )
+                    for end_a, end_b in unused
+                )
+            )
 
         logging.info(
-            "Connected cycle(s) %s into a %d-fragment big cycle",
-            ",".join(survivors[index]["id"] for index in group),
-            len(walk) - 1
+            "Connected cycle(s) %s into a %d-fragment big cycle; "
+            "appearances (depth target): %s",
+            ",".join(ids_of(group)),
+            len(walk) - 1,
+            ",".join(
+                "{}={}({:.2f})".format(
+                    region,
+                    multiplicities[region],
+                    targets.get(region, 0.0)
+                )
+                for region in sorted(multiplicities)
+            )
         )
 
-        add_record(walk, source_ids, cutoff=cutoff)
+        add_record(walk, ids_of(group), cutoff=cutoff)
 
-    for group in build_region_groups(survivors):
+    for group in build_region_groups(cycles):
 
         if apply_depth_filter:
             core, low, cutoff, low_regions = partition_group_by_depth(
-                cycles=survivors,
+                cycles=cycles,
                 group=group,
                 region_depths=region_depths,
                 minimum_fold_gap=depth_filter_fold_gap
@@ -1227,20 +1705,18 @@ def merge_small_cycles(
                 )
             )
 
-        for index in low:
+        for cycle, subsumed in select_big_cycles(
+            supported_cycles(low)
+        ):
             add_record(
-                survivors[index]["nodes"],
-                sources_for(index),
-                cutoff=cutoff,
-                amplicon_filter="low_depth",
-                low_regions=sorted(
-                    cycle_regions(survivors[index]) & low_regions
-                )
+                cycle["nodes"],
+                [cycle["id"]] + [other["id"] for other in subsumed],
+                cutoff=cutoff
             )
 
-        # Removing the low-depth cycles can leave the core in several
-        # pieces, so the remainder is regrouped before merging.
-        core_cycles = [survivors[index] for index in core]
+        core_cycles = [cycles[index] for index in core]
+
+        core_start = len(output_records)
 
         for members in build_region_groups(core_cycles):
             merge_group(
@@ -1248,22 +1724,146 @@ def merge_small_cycles(
                 cutoff
             )
 
+        if low_regions:
+            held_back.append((
+                low_regions,
+                range(core_start, len(output_records)),
+                cutoff
+            ))
+
+    original_count = len(output_records)
+    variant_notes = {}
+
+    if low_depth_variants and end_support:
+        for low_regions, record_indices, cutoff in held_back:
+            for index in record_indices:
+                base = output_records[index]
+
+                for walk, low_set, added in find_low_depth_variants(
+                    base_walk=base["path"].split(" -> "),
+                    low_regions=low_regions,
+                    end_support=end_support,
+                    min_support=min_junction_support
+                ):
+                    before = len(output_records)
+
+                    add_record(
+                        walk,
+                        ["variant_of_{}".format(base["bigcycle_id"])],
+                        cutoff=cutoff
+                    )
+
+                    if len(output_records) == before:
+                        continue
+
+                    added_text = ",".join(
+                        "{}{}~{}{}={}{}".format(
+                            end_a[0], end_a[1], end_b[0], end_b[1],
+                            end_support.get((end_a, end_b), 0),
+                            "" if count == 1 else "x{}".format(count)
+                        )
+                        for (end_a, end_b), count in sorted(added.items())
+                    )
+
+                    variant_notes[output_records[-1]["bigcycle_id"]] = (
+                        base["bigcycle_id"],
+                        ",".join(sorted(low_set)),
+                        added_text
+                    )
+
+                    logging.info(
+                        "Added big cycle %d: variant of big cycle %d "
+                        "carrying low-depth region(s) %s via %s",
+                        output_records[-1]["bigcycle_id"],
+                        base["bigcycle_id"],
+                        format_region_values(
+                            sorted(low_set),
+                            region_depths,
+                            numeric_format="{:.2f}"
+                        ),
+                        added_text
+                    )
+
+    path_junctions = {
+        junction
+        for record in output_records
+        for junction in cycle_junctions(record["path"].split(" -> "))
+    }
+
+    exact = (
+        exact_junction_breakpoints(
+            bam_path=bam_path,
+            junctions=path_junctions,
+            junction_reads=junction_reads,
+            min_mapping_quality=junction_mapping_quality
+        )
+        if path_junctions and junction_reads
+        else {}
+    )
+
+    for record in output_records:
+        record["A_breakpoint"], record["B_breakpoint"] = (
+            format_path_breakpoints(record["path"].split(" -> "), exact)
+        )
+
     with open(outfile, "w") as out:
         out.write(header)
 
         for record in output_records:
             out.write(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
                     record["bigcycle_id"],
                     record["total_size"],
                     record["fragment_count"],
                     record["region_depths"],
                     record["region_copy_numbers"],
-                    record["region_occurrences"],
-                    record["path"]
+                    record["junction_supports"],
+                    record["path"],
+                    record["A_breakpoint"],
+                    record["B_breakpoint"]
                 )
             )
 
+
+    if low_depth_variants:
+        variant_file = os.path.join(
+            os.path.dirname(os.path.abspath(outfile)),
+            "summary_bigcycle_variants.txt"
+        )
+
+        with open(variant_file, "w") as out:
+            out.write(
+                header.rstrip("\n")
+                + "\tbase_bigcycle_id\tlow_regions\tadded_junctions\n"
+            )
+
+            for record in output_records[original_count:]:
+                base_id, low_text, added_text = variant_notes[
+                    record["bigcycle_id"]
+                ]
+
+                out.write(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                        record["bigcycle_id"],
+                        record["total_size"],
+                        record["fragment_count"],
+                        record["region_depths"],
+                        record["region_copy_numbers"],
+                        record["junction_supports"],
+                        record["path"],
+                        record["A_breakpoint"],
+                        record["B_breakpoint"],
+                        base_id,
+                        low_text,
+                        added_text
+                    )
+                )
+
+        logging.info(
+            "Wrote %d low-depth variant big cycle(s) -> %s",
+            len(output_records) - original_count,
+            variant_file
+        )
 
     logging.info(
         "Wrote %d depth-checked big cycles -> %s",
