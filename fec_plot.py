@@ -2,10 +2,8 @@
 
 import os
 import logging
-
 import matplotlib
 
-# Required when running on a cluster without a display.
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
@@ -13,13 +11,6 @@ import numpy as np
 
 
 def strandless_node(node):
-    """
-    Remove the terminal strand symbol.
-
-    Example:
-        chr2:100-200+ -> chr2:100-200
-        chr2:100-200- -> chr2:100-200
-    """
     node = node.strip()
 
     if node.endswith("+") or node.endswith("-"):
@@ -27,24 +18,13 @@ def strandless_node(node):
 
     return node
 
-
 def node_strand(node):
-    """
-    Return the terminal strand symbol.
-    """
     if node.endswith("+") or node.endswith("-"):
         return node[-1]
 
     return "."
 
-
 def parse_fragment_length(node):
-    """
-    Calculate fragment length from a coordinate node.
-
-    Example:
-        chr2:100-200+ -> 101 bp
-    """
     region = strandless_node(node)
 
     chromosome, coordinates = region.rsplit(":", 1)
@@ -55,15 +35,7 @@ def parse_fragment_length(node):
 
     return end - start + 1
 
-
 def parse_bigcycle_path(path_text):
-    """
-    Parse a path written as:
-
-        A -> B -> C -> A
-
-    Semicolon-separated paths are also supported.
-    """
     path_text = path_text.strip()
 
     if "->" in path_text:
@@ -77,11 +49,7 @@ def parse_bigcycle_path(path_text):
         if field.strip()
     ]
 
-
 def make_color_map(regions):
-    """
-    Assign one color to every unique strandless genomic region.
-    """
     region_count = len(regions)
 
     if region_count <= 10:
@@ -117,18 +85,11 @@ def make_color_map(regions):
         for index, region in enumerate(regions)
     }
 
-
 def scale_marker_sizes(
     fragment_lengths,
     minimum_size=100,
     maximum_size=900
 ):
-    """
-    Scale marker area according to fragment length.
-
-    Square-root scaling prevents very long fragments from completely
-    dominating the figure.
-    """
     lengths = np.asarray(
         fragment_lengths,
         dtype=float
@@ -159,14 +120,6 @@ def scale_marker_sizes(
     )
     
 def format_fragment_size(length):
-    """
-    Format a fragment length for display.
-
-    Examples:
-        157 bp
-        135.8 kb
-        1.42 Mb
-    """
     if length >= 1000000:
         return "{:.2f} Mb".format(
             length / 1000000.0
@@ -179,7 +132,6 @@ def format_fragment_size(length):
 
     return "{} bp".format(length)
 
-
 def plot_bigcycle_path(
     path_text,
     output_file,
@@ -187,25 +139,6 @@ def plot_bigcycle_path(
     dpi=250,
     minimum_arc_degrees=5.0
 ):
-    """
-    Plot one eccDNA as a segmented circular ring.
-
-    Each path occurrence is drawn as one colored arc.
-
-    Arc color:
-        Genomic fragment identity.
-
-    Arc length:
-        Proportional to the square root of fragment length. The square
-        root transformation keeps very short fragments visible when
-        very long fragments are also present.
-
-    Arrowhead:
-        Traversal direction.
-
-    Labels:
-        Chromosome, coordinates, strand, and fragment length.
-    """
     nodes = parse_bigcycle_path(path_text)
 
     if len(nodes) < 2:
@@ -215,7 +148,6 @@ def plot_bigcycle_path(
         )
         return None
 
-    # The final node may repeat the first node only to close the cycle.
     is_closed = nodes[0] == nodes[-1]
 
     if is_closed:
@@ -247,13 +179,9 @@ def plot_bigcycle_path(
         dtype=float
     )
 
-    # Square-root scaling gives longer fragments larger arcs while
-    # keeping small fragments visible.
     arc_weights = np.sqrt(fragment_lengths)
 
     node_count = len(plot_nodes)
-
-    # Leave a small gap between neighboring fragments.
     gap_degrees = min(
         2.0,
         20.0 / float(max(node_count, 1))
@@ -273,14 +201,10 @@ def plot_bigcycle_path(
         / arc_weights.sum()
         * available_degrees
     )
-
-    # Make tiny fragments visible.
     arc_degrees = np.maximum(
         raw_arc_degrees,
         minimum_arc_degrees
     )
-
-    # Rescale after applying the minimum.
     arc_degrees = (
         arc_degrees
         / arc_degrees.sum()
@@ -301,8 +225,6 @@ def plot_bigcycle_path(
 
     radius = 1.0
     line_width = 8.0
-
-    # Begin at the top and move clockwise.
     current_angle = 90.0
 
     label_records = []
@@ -321,8 +243,6 @@ def plot_bigcycle_path(
             current_angle
             - fragment_angle
         )
-
-        # Leave room for an arrowhead at the end of the arc.
         arrow_degrees = min(
             4.0,
             max(1.2, fragment_angle * 0.12)
@@ -333,7 +253,6 @@ def plot_bigcycle_path(
             + arrow_degrees
         )
 
-        # Draw the main colored arc.
         angle_values = np.linspace(
             np.radians(start_angle),
             np.radians(arc_end_angle),
@@ -357,7 +276,6 @@ def plot_bigcycle_path(
             zorder=2
         )
 
-        # Draw an arrowhead following the direction of the circle.
         arrow_start_angle = np.radians(
             arc_end_angle
         )
@@ -391,7 +309,6 @@ def plot_bigcycle_path(
             zorder=3
         )
 
-        # Label at the midpoint of the fragment arc.
         midpoint_angle = np.radians(
             (
                 start_angle
@@ -437,7 +354,6 @@ def plot_bigcycle_path(
 
         current_angle = end_angle - gap_degrees
 
-    # Draw labels after drawing all arcs.
     for (
         label_x,
         label_y,
@@ -454,7 +370,6 @@ def plot_bigcycle_path(
             fontsize=8
         )
 
-    # Add central eccDNA label.
     center_lines = []
 
     if bigcycle_id is not None:
@@ -478,7 +393,6 @@ def plot_bigcycle_path(
         fontweight="bold"
     )
 
-    # Add a color legend below the circular plot.
     for region in unique_regions:
         axis.plot(
             [],
@@ -502,13 +416,6 @@ def plot_bigcycle_path(
     axis.axis("off")
 
     title = "Reconstructed eccDNA"
-    """
-    if source_cycles:
-        title = "{}\nSource cycles: {}".format(
-            title,
-            source_cycles
-        )
-    """
     axis.set_title(
         title,
         fontsize=12,
@@ -539,9 +446,6 @@ def plot_bigcycles_from_summary(
     output_dir,
     dpi=200
 ):
-    """
-    Read summary_bigcycle.txt and create one PNG for each big cycle.
-    """
     os.makedirs(
         output_dir,
         exist_ok=True
