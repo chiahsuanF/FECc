@@ -76,13 +76,7 @@ def identify_amplified_regions(
             "No recognized chromosomes found in BAM"
         )
         sys.exit(1)
-
-    # Estimate background coverage.
-    # Estimate background coverage.
-    #
-    # Continue sampling until the requested number of valid coverage
-    # positions is collected or the maximum number of attempts is
-    # reached.
+        
     covs = []
 
     target_valid_samples = num_samples
