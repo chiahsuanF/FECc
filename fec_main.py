@@ -15,11 +15,6 @@ from fec_cycle import *
 from fec_fa import *
 from fec_plot import plot_bigcycles_from_summary
 
-
-
-# -----------------------
-# Main
-# -----------------------
 if __name__=="__main__":
     p=argparse.ArgumentParser(description="Amplified-region -> graph -> cycles -> POA pipeline")
     p.add_argument('-b',"--bam", required=True, type=str, help='[STR] Input sorted bam, index required')
@@ -34,6 +29,8 @@ if __name__=="__main__":
     p.add_argument('-mq',"--min_mapping_quality", type=int, default=30, help="[INT] Minimum read mapping quality for big-cycle region depth; 0 counts multi-mapping reads and inflates depth in repeat regions")
     p.add_argument("--no_depth_filter", action="store_true", help="Merge every cycle of a group, instead of holding back the cycles that visit a region below the group's depth cutoff")
     p.add_argument("--depth_filter_fold_gap", type=float, default=1.4, help="[[FLOAT] Smallest fold gap in sorted region depths that may be used as the cutoff; the widest qualifying gap separates the amplified core from the low-depth backgroun")
+    p.add_argument('-mjs',"--min_junction_support", type=int, default=3, help="[INT] Split reads a segment-end junction needs before a big cycle may use it")
+    p.add_argument("--no_low_depth_variants", action="store_true", help="Do not add variant big cycles that carry low-depth regions held back by the depth filter (summary_bigcycle_variants.txt)")
 
     args=p.parse_args()
 
@@ -67,7 +64,7 @@ if __name__=="__main__":
     refined = refine_regions_by_highQ_breakpoints( merged, bps, args.output_dir, sample, window=200000) #120,000
 
     # 5) Build Junction Graph
-    graph = build_graph(refined, bps, args.output_dir, sample, depth)
+    graph = build_graph(refined, bps, args.bam, args.output_dir, sample)
     
     # 6) Detect cycles & write raw coords
     raw_cycles = find_cycles( graph, args.output_dir, sample, max_cycle_len=args.max_cycle_len)
@@ -105,7 +102,10 @@ if __name__=="__main__":
     copy_tolerance=args.copy_tolerance,
     require_depth_support=args.require_depth_support,
     apply_depth_filter=not args.no_depth_filter,
-    depth_filter_fold_gap=args.depth_filter_fold_gap
+    depth_filter_fold_gap=args.depth_filter_fold_gap,
+    breakpoints=bps,
+    min_junction_support=args.min_junction_support,
+    low_depth_variants=not args.no_low_depth_variants
 )
     bigcycle_plot_dir = os.path.join(
     args.output_dir,
