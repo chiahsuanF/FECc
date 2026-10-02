@@ -12,17 +12,6 @@ from fec_login import *
 
 
 def normalize_cycle(cycle):
-    """
-    Canonicalize a cycle.
-
-    Removes:
-      1. rotation differences
-      2. reverse-direction differences
-      3. strand differences
-
-    Keeps only region IDs.
-    """
-
     nodes = [node[0] for node in cycle[:-1]]
 
     if not nodes:
@@ -32,17 +21,10 @@ def normalize_cycle(cycle):
 
     representations = []
 
-    #
-    # forward rotations
-    #
     for i in range(n):
         representations.append(
             tuple(nodes[i:] + nodes[:i])
         )
-
-    #
-    # reverse rotations
-    #
     rev = list(reversed(nodes))
 
     for i in range(n):
@@ -54,9 +36,6 @@ def normalize_cycle(cycle):
 
 
 def cycle_support(cycle, graph):
-    """
-    Total split-read support of the junctions a cycle traverses.
-    """
     return sum(
         graph.get(left, {}).get(right, 0)
         for left, right in zip(cycle, cycle[1:])
@@ -85,11 +64,6 @@ def dfs_visit(
             key = normalize_cycle(
                 full_cycle
             )
-
-            # The same regions can be traversed in several orientation
-            # patterns, each using different junctions. normalize_cycle
-            # gives them all one key, so keep the best-supported one
-            # rather than whichever the search reached first.
             candidate = (
                 cycle_support(full_cycle, graph),
                 tuple(full_cycle)
@@ -184,11 +158,6 @@ def find_cycles(graph, outdir, sample, max_cycle_len=20):
 # -------------------------------------------------------
 
 def cycle_size(cycle, regions):
-    """
-    Return the total base-pair size of a simple cycle.
-
-    The final node is excluded because it repeats the first node.
-    """
     total_size = 0
 
     for node in cycle[:-1]:
@@ -200,11 +169,6 @@ def cycle_size(cycle, regions):
 
 
 def event_size(nodes, regions):
-    """
-    Return the total base-pair size of an eccDNA event.
-
-    Each region node is counted exactly once.
-    """
     return sum(
         regions[node[0]][2] - regions[node[0]][1] + 1
         for node in set(nodes)
@@ -321,8 +285,6 @@ def expand_events_with_attached_nodes(
 
         expanded_events.append(event_nodes)
 
-    # Expansion can make two previously separate events overlap.
-    # Merge them again transitively.
     pending = list(expanded_events)
     final_events = []
 
@@ -385,14 +347,6 @@ def write_cycles_with_coords(
     sample,
     label
 ):
-    """
-    Write simple cycles with genomic coordinates.
-
-    Raw output can be restricted to maximal cycles.
-    Filtered output preserves every quality-filtered cycle, including
-    valid two-region cycles that are subsets of larger cycles.
-    """
-
     if label == "filtered":
         output_cycles = cycles
 
@@ -466,13 +420,6 @@ def write_merged_eccdna_events(
     max_hops=1,
     min_edge_support=1
 ):
-    """
-    Merge overlapping cycles into eccDNA events.
-
-    If include_attached=True, graph nodes directly connected to a
-    cyclic event are also included, even if those nodes are not part
-    of a simple cycle.
-    """
     events = merge_overlapping_cycles(cycles)
 
     if include_attached:
@@ -552,10 +499,6 @@ def write_merged_eccdna_events(
 # -------------------------------------------------------
 
 def log_cycle_diagnostics(cycles, regions, graph):
-    """
-    Log the coordinates in every cycle and report graph nodes that are
-    not included in any detected cycle.
-    """
     cyclic_nodes = set()
 
     for cycle_id, cycle in enumerate(cycles, start=1):
