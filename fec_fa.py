@@ -15,10 +15,6 @@ def build_bigcycle_fasta(
     output_dir,
     sample=None
 ):
-    """
-    Build FASTA sequences directly from summary_bigcycle.txt.
-    """
-
     t0 = tic("Building big-cycle FASTA")
 
     ref = pysam.FastaFile(reference_genome)
@@ -61,9 +57,6 @@ def build_bigcycle_fasta(
                 if x.strip()
             ]
 
-            #
-            # remove duplicated closing node
-            #
             if (
                 len(nodes) > 1
                 and nodes[0] == nodes[-1]
