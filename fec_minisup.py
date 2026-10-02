@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 
-import  os,  logging,  pysam, csv
-from bisect import bisect_left, bisect_right
+import os, logging, pysam
 from concurrent.futures import ThreadPoolExecutor
-from fec_login import *
 
 # -----------------------
 # 1. Depth & MinSupport
@@ -63,21 +61,15 @@ def estimate_depth_and_minsupp(bam_path, min_support, depth_override,
                                outdir, sample, threads=4):
 
     logging.info("Estimating depth & minsupp (multi-threaded)")
-
-    # ---- depth ----
     if depth_override is not None:
         depth = depth_override
     else:
         depth = compute_mean_depth_mt(bam_path, threads=threads)
-
-    # ---- minsupp ----
     if min_support is None:
         #minsupp = round(depth / 10) + 2
         minsupp = round(depth / 2)
     else:
         minsupp = min_support
-
-    # ---- output ----
     os.makedirs(outdir, exist_ok=True)
     fn = os.path.join(outdir, f"{sample}_depth_minsupp.txt")
 
