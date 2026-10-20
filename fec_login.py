@@ -26,3 +26,11 @@ def tic(msg):
 
 def toc(start, msg):
     logging.info(f" END: {msg} ({time.time()-start:.1f}s)")
+
+def junction_mq_passes(mq1, mq2, min_mq, partner_mq):
+    return max(mq1, mq2) >= min_mq and min(mq1, mq2) >= partner_mq
+
+def partner_side_allowed(mq1, mq2, min_mq, len1, len2, partner_min_len):
+    if min(mq1, mq2) >= min_mq or partner_min_len <= 0:
+        return True
+    return min(len1, len2) >= partner_min_len
