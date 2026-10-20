@@ -12,6 +12,7 @@ from fec_login import *
 
 
 def normalize_cycle(cycle):
+
     nodes = [node[0] for node in cycle[:-1]]
 
     if not nodes:
@@ -25,6 +26,7 @@ def normalize_cycle(cycle):
         representations.append(
             tuple(nodes[i:] + nodes[:i])
         )
+
     rev = list(reversed(nodes))
 
     for i in range(n):
@@ -36,6 +38,7 @@ def normalize_cycle(cycle):
 
 
 def cycle_support(cycle, graph):
+
     return sum(
         graph.get(left, {}).get(right, 0)
         for left, right in zip(cycle, cycle[1:])
@@ -64,6 +67,7 @@ def dfs_visit(
             key = normalize_cycle(
                 full_cycle
             )
+
             candidate = (
                 cycle_support(full_cycle, graph),
                 tuple(full_cycle)
@@ -77,7 +81,6 @@ def dfs_visit(
         elif (
             len(path) < max_cycle_len
             and neighbor[0] not in path_segment_ids
-            #and neighbor >= start
         ):
 
             dfs_visit(
@@ -158,6 +161,7 @@ def find_cycles(graph, outdir, sample, max_cycle_len=20):
 # -------------------------------------------------------
 
 def cycle_size(cycle, regions):
+
     total_size = 0
 
     for node in cycle[:-1]:
@@ -169,6 +173,7 @@ def cycle_size(cycle, regions):
 
 
 def event_size(nodes, regions):
+
     return sum(
         regions[node[0]][2] - regions[node[0]][1] + 1
         for node in set(nodes)
@@ -259,8 +264,6 @@ def expand_events_with_attached_nodes(
             for node in frontier:
                 for neighbor, edge_data in graph.get(node, {}).items():
 
-                    # Support dictionary, numeric support, or other
-                    # existing graph edge representations.
                     if isinstance(edge_data, dict):
                         support = edge_data.get(
                             "support",
@@ -347,6 +350,7 @@ def write_cycles_with_coords(
     sample,
     label
 ):
+
     if label == "filtered":
         output_cycles = cycles
 
@@ -430,7 +434,6 @@ def write_merged_eccdna_events(
             min_edge_support=min_edge_support
         )
 
-    # Stable event ordering: largest event first.
     events.sort(
         key=lambda nodes: (
             -event_size(nodes, regions),
