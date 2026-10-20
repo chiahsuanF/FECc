@@ -1,100 +1,77 @@
 #!/usr/bin/env python3
 
-import os, logging
-from collections import defaultdict
-from bisect import bisect_left, bisect_right
+import os, logging, pysam
 from fec_login import *
 
 # -----------------------
-# 4. Refine Regions by High-Q Clusters // 
+# 7. Filter & Write Cycles
 # -----------------------
+def check_region_quality(region, bam_path, qthr=5, fthr=0.01):
+    chrom,s,e = region
+    bam = pysam.AlignmentFile(bam_path,'rb')
+    tot=high=0
+    for r in bam.fetch(chrom, s, e):
+        tot+=1
+        if r.mapping_quality>=qthr:
+            high+=1
+    bam.close()
+    return tot>0 and (high/tot)>=fthr
 
-def refine_regions_by_highQ_breakpoints( regions, bps, outdir, sample, window=1000):
+def filter_and_write_cycles(
+    cycles,
+    regs,
+    bam_path,
+    outdir,
+    sample
+):
 
-    t0 = tic("Refining regions by high-Q breakpoints")
+    t0 = tic("Filtering cycles")
 
-    chr_pts = defaultdict(list)
+    quality_cache = {}
 
-    for q,c1,b1,m1,strand1,c2,b2,m2,strand2 in bps:
-        chr_pts[c1].append((b1,m1))
-        chr_pts[c2].append((b2,m2))
+    def good(node):
 
-    for chrom in chr_pts:
-        chr_pts[chrom].sort()
+        idx = node[0]
 
-    chr_pos = {}
+        if idx not in quality_cache:
 
-    for chrom, pts in chr_pts.items():
-        chr_pos[chrom] = [x[0] for x in pts]
+            quality_cache[idx] = check_region_quality(
+                regs[idx],
+                bam_path
+            )
 
-    new_regs = []
+        return quality_cache[idx]
 
-    for chrom,start,end in regions:
-
-        if chrom not in chr_pts:
-            new_regs.append((chrom,start,end))
-            continue
-
-        lo = bisect_left(
-            chr_pos[chrom],
-            start
+    filtered = [
+        c
+        for c in cycles
+        if all(
+            good(node)
+            for node in c[:-1]
         )
-
-        hi = bisect_right(
-            chr_pos[chrom],
-            end
-        )
-
-        pts = chr_pts[chrom][lo:hi]
-
-        if not pts:
-            new_regs.append((chrom,start,end))
-            continue
-
-        clusters = []
-        curr = [pts[0]]
-
-        for pos,mq in pts[1:]:
-
-            if pos - curr[-1][0] <= window:
-                curr.append((pos,mq))
-            else:
-                clusters.append(curr)
-                curr = [(pos,mq)]
-
-        clusters.append(curr)
-
-        reps = sorted(
-            max(cl,key=lambda x:x[1])[0]
-            for cl in clusters
-        )
-
-        cuts = [start] + reps + [end]
-
-        for a,b in zip(cuts,cuts[1:]):
-            if a < b:
-                new_regs.append(
-                    (chrom,a,b)
-                )
+    ]
 
     fn = os.path.join(
         outdir,
-        f"04_{sample}_refined_regions.txt"
+        f"08_{sample}_filtered_cycles.txt"
     )
 
-    with open(fn,"w") as f:
-        f.write("chrom\tstart\tend\n")
+    with open(fn, "w") as f:
 
-        for c,s,e in new_regs:
-            f.write(f"{c}\t{s}\t{e}\n")
+        f.write("cycle_nodes\n")
+
+        for c in filtered:
+
+            f.write(
+                ",".join(map(str, c))
+                + "\n"
+            )
 
     logging.info(
-        f"Wrote {len(new_regs)} refined regions → {fn}"
+        f"Wrote {len(filtered):,} filtered cycles -> {fn}"
     )
 
-    toc(
-        t0,
-        "Refining regions by high-Q breakpoints"
-    )
+    toc(t0, "Filtering cycles")
 
-    return new_regs
+    return filtered
+
