@@ -18,13 +18,17 @@ def strandless_node(node):
 
     return node
 
+
 def node_strand(node):
+
     if node.endswith("+") or node.endswith("-"):
         return node[-1]
 
     return "."
 
+
 def parse_fragment_length(node):
+
     region = strandless_node(node)
 
     chromosome, coordinates = region.rsplit(":", 1)
@@ -35,7 +39,9 @@ def parse_fragment_length(node):
 
     return end - start + 1
 
+
 def parse_bigcycle_path(path_text):
+
     path_text = path_text.strip()
 
     if "->" in path_text:
@@ -49,7 +55,9 @@ def parse_bigcycle_path(path_text):
         if field.strip()
     ]
 
+
 def make_color_map(regions):
+
     region_count = len(regions)
 
     if region_count <= 10:
@@ -85,11 +93,13 @@ def make_color_map(regions):
         for index, region in enumerate(regions)
     }
 
+
 def scale_marker_sizes(
     fragment_lengths,
     minimum_size=100,
     maximum_size=900
 ):
+
     lengths = np.asarray(
         fragment_lengths,
         dtype=float
@@ -120,6 +130,7 @@ def scale_marker_sizes(
     )
     
 def format_fragment_size(length):
+
     if length >= 1000000:
         return "{:.2f} Mb".format(
             length / 1000000.0
@@ -132,6 +143,7 @@ def format_fragment_size(length):
 
     return "{} bp".format(length)
 
+
 def plot_bigcycle_path(
     path_text,
     output_file,
@@ -139,6 +151,7 @@ def plot_bigcycle_path(
     dpi=250,
     minimum_arc_degrees=5.0
 ):
+
     nodes = parse_bigcycle_path(path_text)
 
     if len(nodes) < 2:
@@ -182,6 +195,7 @@ def plot_bigcycle_path(
     arc_weights = np.sqrt(fragment_lengths)
 
     node_count = len(plot_nodes)
+
     gap_degrees = min(
         2.0,
         20.0 / float(max(node_count, 1))
@@ -201,10 +215,12 @@ def plot_bigcycle_path(
         / arc_weights.sum()
         * available_degrees
     )
+
     arc_degrees = np.maximum(
         raw_arc_degrees,
         minimum_arc_degrees
     )
+
     arc_degrees = (
         arc_degrees
         / arc_degrees.sum()
@@ -225,6 +241,7 @@ def plot_bigcycle_path(
 
     radius = 1.0
     line_width = 8.0
+
     current_angle = 90.0
 
     label_records = []
@@ -243,6 +260,7 @@ def plot_bigcycle_path(
             current_angle
             - fragment_angle
         )
+
         arrow_degrees = min(
             4.0,
             max(1.2, fragment_angle * 0.12)
@@ -416,6 +434,7 @@ def plot_bigcycle_path(
     axis.axis("off")
 
     title = "Reconstructed eccDNA"
+
     axis.set_title(
         title,
         fontsize=12,
@@ -446,6 +465,7 @@ def plot_bigcycles_from_summary(
     output_dir,
     dpi=200
 ):
+
     os.makedirs(
         output_dir,
         exist_ok=True
