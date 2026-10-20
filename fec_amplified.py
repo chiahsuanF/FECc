@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse, os, sys, random, logging,  pysam, csv, time
+import multiprocessing as mp
 from bisect import bisect_left, bisect_right
 import numpy as np
 from fec_login import *
@@ -36,12 +37,66 @@ def merge_regions(regions):
     ]
 
 
+SCAN_CHUNK_SIZE = 10_000_000
+
+
+def _scan_chunk(job):
+
+    bam_path, chrom, start, end, amp_thresh = job
+
+    runs = []
+    amplified_start = None
+    previous_position = None
+
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+
+        for column in bam.pileup(
+            chrom,
+            start,
+            end,
+            truncate=True
+        ):
+            position = column.pos
+
+            if (
+                previous_position is not None
+                and position > previous_position + 1
+            ):
+                if amplified_start is not None:
+                    runs.append(
+                        (amplified_start, previous_position + 1)
+                    )
+
+                amplified_start = None
+
+            if column.n >= amp_thresh:
+                if amplified_start is None:
+                    amplified_start = position
+            else:
+                if amplified_start is not None:
+                    runs.append(
+                        (amplified_start, position)
+                    )
+
+                amplified_start = None
+
+            previous_position = position
+
+    if amplified_start is not None:
+        runs.append(
+            (amplified_start, previous_position + 1)
+        )
+
+    return runs
+
+
 def identify_amplified_regions(
     bam_path,
     outdir,
     sample,
     min_len=100,
-    num_samples=100, max_low_depth_gap=1000
+    num_samples=1000, max_low_depth_gap=0, seed=1,
+    threads=1
 ):
 
     t0 = tic("Identifying amplified regions")
@@ -76,7 +131,9 @@ def identify_amplified_regions(
             "No recognized chromosomes found in BAM"
         )
         sys.exit(1)
-        
+
+    rng = random.Random(seed)
+
     covs = []
 
     target_valid_samples = num_samples
@@ -100,11 +157,11 @@ def identify_amplified_regions(
     ):
         sampling_attempts += 1
 
-        chrom, chromosome_length = random.choice(
+        chrom, chromosome_length = rng.choice(
             contigs
         )
 
-        position = random.randrange(
+        position = rng.randrange(
             chromosome_length
         )
 
@@ -209,105 +266,71 @@ def identify_amplified_regions(
         dtype=float
     )
 
-    amp_thresh = (
-        coverage_array.mean()
-        + 3.0 * coverage_array.std()
+    median_depth = float(
+        np.median(coverage_array)
+    )
+
+    mad_depth = 1.4826 * float(
+        np.median(np.abs(coverage_array - median_depth))
+    )
+
+    amp_thresh = max(
+        median_depth + 3.0 * mad_depth,
+        2.0 * median_depth
     )
 
     logging.info(
-        "Amplification threshold = %.1f",
-        amp_thresh
+        "Amplification threshold = %.1f (median=%.1f, MAD=%.2f, n=%d; "
+        "max(median+3*MAD, 2*median))",
+        amp_thresh,
+        median_depth,
+        mad_depth,
+        len(coverage_array)
     )
 
-    # Scan the genome.
+    jobs = [
+        (bam_path, chrom, start, min(start + SCAN_CHUNK_SIZE, chromosome_length), amp_thresh)
+        for chrom, chromosome_length in contigs
+        for start in range(0, chromosome_length, SCAN_CHUNK_SIZE)
+    ]
+
+    logging.info(
+        "Scanning %d windows with %d process(es)",
+        len(jobs),
+        threads
+    )
+
+    if threads > 1:
+        with mp.get_context("fork").Pool(threads) as pool:
+            chunk_runs = pool.map(_scan_chunk, jobs, chunksize=1)
+    else:
+        chunk_runs = [_scan_chunk(job) for job in jobs]
+
     regs = []
+    gaps = []
+    open_run = None
 
-    bam = pysam.AlignmentFile(
-        bam_path,
-        "rb"
-    )
+    for (_, chrom, start, _, _), runs in zip(jobs, chunk_runs):
 
-    try:
-        for chrom, chromosome_length in contigs:
-            amplified_start = None
-            previous_position = None
+        for run_start, run_end in runs:
 
-            for column in bam.pileup(
-                chrom,
-                0,
-                chromosome_length,
-                truncate=True
+            if (
+                open_run is not None
+                and open_run[0] == chrom
+                and run_start - open_run[2] <= max_low_depth_gap
             ):
-                position = column.pos
+                if run_start > open_run[2]:
+                    gaps.append((chrom, open_run[2], run_start))
+                open_run[2] = run_end
+                continue
 
-                # Close the interval if pileup skips genomic positions.
-                if (
-                    previous_position is not None
-                    and position > previous_position + 1
-                ):
-                    if amplified_start is not None:
-                        amplified_end = previous_position + 1
+            if open_run is not None and open_run[2] - open_run[1] >= min_len:
+                regs.append(tuple(open_run))
 
-                        if (
-                            amplified_end - amplified_start
-                            >= min_len
-                        ):
-                            regs.append(
-                                (
-                                    chrom,
-                                    amplified_start,
-                                    amplified_end
-                                )
-                            )
+            open_run = [chrom, run_start, run_end]
 
-                    amplified_start = None
-
-                if column.n >= amp_thresh:
-                    if amplified_start is None:
-                        amplified_start = position
-                else:
-                    if amplified_start is not None:
-                        # Half-open endpoint. Do not subtract one.
-                        amplified_end = position
-
-                        if (
-                            amplified_end - amplified_start
-                            >= min_len
-                        ):
-                            regs.append(
-                                (
-                                    chrom,
-                                    amplified_start,
-                                    amplified_end
-                                )
-                            )
-
-                    amplified_start = None
-
-                previous_position = position
-
-            # Close an amplified interval at the final covered position.
-            if amplified_start is not None:
-                amplified_end = (
-                    previous_position + 1
-                    if previous_position is not None
-                    else chromosome_length
-                )
-
-                if (
-                    amplified_end - amplified_start
-                    >= min_len
-                ):
-                    regs.append(
-                        (
-                            chrom,
-                            amplified_start,
-                            amplified_end
-                        )
-                    )
-
-    finally:
-        bam.close()
+    if open_run is not None and open_run[2] - open_run[1] >= min_len:
+        regs.append(tuple(open_run))
 
     output_file = os.path.join(
         outdir,
@@ -335,4 +358,4 @@ def identify_amplified_regions(
         "Identifying amplified regions"
     )
 
-    return regs, amp_thresh
+    return regs, amp_thresh, gaps
