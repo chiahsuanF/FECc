@@ -11,11 +11,8 @@ from fec_login import *
 # -----------------------
 
 MIN_SA_SUPPORT = 2
-MIN_SA_RATIO = 0.05#
+MIN_SA_RATIO = 0.05
 
-# -----------------------------------
-# local depth: mean coverage of the given fragments
-# -----------------------------------
 SKIP_FLAGS = 0x4 | 0x100 | 0x200 | 0x400
 
 def aligned_bases(bam, chrom, s, e, min_mq):
@@ -28,7 +25,6 @@ def aligned_bases(bam, chrom, s, e, min_mq):
             continue
 
         if read.reference_start >= s and read.reference_end <= e:
-            # M, =, X operations
             stats = read.get_cigar_stats()[0]
             total += int(stats[0] + stats[7] + stats[8])
             continue
@@ -73,12 +69,9 @@ def fragment_depths(regs, indices, bam_path, min_mq=30):
     return depths
 
 
-def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
+def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30, partner_mq=0, partner_min_len=0):
     t0 = tic("Building junction graph")
 
-    # -----------------------------------
-    # region index
-    # -----------------------------------
     per_chr = defaultdict(list)
 
     for idx, (chrom, start, end) in enumerate(regs):
@@ -86,9 +79,7 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
 
     for lst in per_chr.values():
         lst.sort()
-    # -----------------------------------
-    # cached binary search
-    # -----------------------------------
+
     @lru_cache(maxsize=1000000)
     def find_idx(chrom, pos):
 
@@ -116,11 +107,6 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
 
         return None
 
-
-    # -----------------------------------
-    # collect edge support
-    # -----------------------------------
-
     edge_reads = defaultdict(set)
 
     processed = 0
@@ -130,7 +116,7 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
 
         processed += 1
 
-        if mq1 < min_mq or mq2 < min_mq:
+        if not junction_mq_passes(mq1, mq2, min_mq, partner_mq):
             continue
 
         i1 = find_idx(c1, b1)
@@ -142,6 +128,13 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
             continue
 
         if i1 == i2:
+            continue
+
+        if not partner_side_allowed(
+            mq1, mq2, min_mq,
+            regs[i1][2] - regs[i1][1], regs[i2][2] - regs[i2][1],
+            partner_min_len
+        ):
             continue
 
         kept += 1
@@ -160,9 +153,6 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
         for edge, reads in edge_reads.items()
     }
 
-    # -----------------------------------
-    # depth only for fragments on an edge that can pass
-    # -----------------------------------
     used = {
         i
         for (i1, _, i2, _), sa_support in edge_support.items()
@@ -176,7 +166,7 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
     )
 
     local_depth = fragment_depths(regs, used, bam_path, min_mq)
-
+    
     fn = os.path.join(
         outdir,
         f"05_{sample}_graph_edges.txt"
@@ -196,7 +186,6 @@ def build_graph( regs, bps, bam_path, outdir, sample, min_mq=30):
                 continue
 
             depth = min(local_depth[i1], local_depth[i2])
-            #depth = local_depth[i1]
 
             if depth <= 0:
                 logging.warning(
