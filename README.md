@@ -1,6 +1,5 @@
 
 # FEC
-test
 Finding ECCDNA(FEC) from long-read sequencing data.
 
 Author: Chia Hsuan(Josh) Fan
@@ -12,8 +11,6 @@ Email: rge4br@virginia.edu
 ```sh
 git clone https://github.com/chiahsuanF/FECc.git
 cd FECc/
-```
-```
 ./fec_main.py -h
 ```
 
@@ -23,14 +20,6 @@ cd FECc/
 
 # Example usage:
 ./fec_main.py -b index_aligned_human_hg38.bam -r hg38.fa
-```
-
-```sh
-# Finding ECCDNA with indexed bam using full function.
-./fec_main.py -b <index.bam> -o <output_dir> -r <ref.fa> -ms <int> -d <flost> -t <int>
-
-# Example usage:
-./fec_main.py -b index_aligned_human_hg38.bam -o fec_output -r hg38.fa -ms 15 -d 30 -t 4
 ```
 
 ## Description
