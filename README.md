@@ -10,8 +10,8 @@ Email: rge4br@virginia.edu
 ## Quick Start
 
 ```sh
-git clone https://github.com/chiahsuanF/fec.git
-cd fec/
+git clone https://github.com/chiahsuanF/FECc.git
+cd FECc/
 ```
 ```
 ./fec_main.py -h
@@ -56,11 +56,11 @@ Dependencies for fec:
 
 ### Git
 ```
-git clone https://github.com/chiahsuanF/fec.git
+git clone https://github.com/chiahsuanF/FECc.git
 ```
 Next, add the directory to PATH:
 ```
-export PATH=$PWD/fec/:$PATH
+export PATH=$PWD/FECc/:$PATH
 ```
 
 ## General usage
