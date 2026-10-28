@@ -101,46 +101,48 @@ For more detail, please look at [Minimap2 GitHub pages](https://github.com/lh3/m
 ## Output files
 The output file directory includes:
 
-### summary.txt
-| cycle_id |	size	| path|
-|:---------|:-------------|:-------------|
-|ID|eccDNA size|eccDNA path|
+### summary_bigcycle.txt
+| column name |		| 
+|:---------|:-------------|
+|bigcycle_id	| the circle's number|
+|total_size	| the lengths of all the pieces|
+|fragment_count | number of fregment make up the circle |	
+|region_depths	| number of coverage that cover each fregment on average |
+|region_copy_numbers	| depth divided by the normal genome depth |
+|junction_supports	| for each place where one fregment connects to the next | 
+|path	| the order of the fregment going around the circle |
+|A_breakpoint	| for each join, the exact position where the first fregment ends |
+|B_breakpoint | the exact position where the next fregment begins |
+
+If no exact position could be found for a join, that entry shows NA.
 ```
-cycle_id	size	path
-0	94077	chr22:24446938-24518142;chr14:42123483-42146354;chr22:24446938-24518142
-1	111332	chr2:15829592-15854254;chr6:116974394-117061062;chr2:15829592-15854254
-2	312359	chr14:40103961-40230096;chr21:15051654-15079079;chr22:31441698-31504777;chr18:15179505-15275221;chr14:40103961-40230096
+bigcycle_id	total_size	fragment_count	region_depths	region_copy_numbers	junction_supports	path	A_breakpoint	B_breakpoint
+1	924140	2	chr2:15694017-16145119=220.45,chr2:16186561-16659597=221.72	chr2:15694017-16145119=223,chr2:16186561-16659597=224	chr2:16186561-16659597-->chr2:15694017-16145119-=80,chr2:15694017-16145119-->chr2:16186561-16659597-=187	chr2:16186561-16659597- -> chr2:15694017-16145119- -> chr2:16186561-16659597-	chr2:16224459,chr2:15694017	chr2:16035532,chr2:16659597
+
 ```
 
-### summary.fa
- &gt; size_path <br> seq
+### summary_bigcycle.fa
+ &gt; bigcycle_id_path <br> seq
 
 ```
->94077_chr22:24446938-24518142;chr14:42123483-42146354;chr22:24446938-24518142
-ACTGGGTAATTTATAAAGGAGAGAGGTTTAATTACTCACAGTTACACATGGCTGGAGAGGCCTCACAATCATGATGGAAG...
->111332_chr2:15829592-15854254;chr6:116974394-117061062;chr2:15829592-15854254
-TGTCTTCTCTGTTTGTGAACAACCCTGGTATCTCTGTGTATCCAAATTTCTCTTTTTATAATGACTTGGTCAGATTGAAT...
->312359_chr14:40103961-40230096;chr21:15051654-15079079;chr22:31441698-31504777;chr18:15179505-15275221;chr14:40103961-40230096
-CTCTGACTATATGAGAGAAGAATTTGGACAAAAGATAATAAAGAAATCTTTGAGATAAGTTACCTGAAACTGCCAAGAAA...
+>bigcycle_1_chr2:16186561-16659597-;chr2:15694017-16145119-;chr2:16186561-16659597-
+TCATTTTCCCCTTCAATGATGGGGCCCCAAAATTTAAAGTACTTGTTCGGGCCCTTAAACCACAAAAAACAAAATTTTTTATT...
 ```
 
 
 ### login_not.txt
 ```
-2026-06-15 09:56:05,095 [INFO] Logger initialized
-2026-06-15 09:56:05,096 [INFO] Starting pipeline for sample index_aligned_human_hg38
-2026-06-15 09:56:05,096 [INFO] Estimating depth & minsupp (multi-threaded)
+2026-10-19 09:49:09,972 [INFO] Logger initialized
+2026-10-19 09:49:09,974 [INFO] Starting pipeline for sample SRR19746237
+2026-10-19 09:49:09,974 [INFO] Estimating depth & minsupp from 100 random regions
 ...
-2026-06-15 10:24:11,809 [INFO] Wrote cycle FASTA → 08_L5_v4_v2_output/summary.fa
-2026-06-15 10:24:11,809 [INFO]  END: Building cycle FASTA (1.6s)
-2026-06-15 10:24:11,809 [INFO] Pipeline completed successfully
+2026-10-19 10:09:28,278 [INFO] Wrote 2 contigs -> SRR19746237_fec_v5_out14_mq30/summary_bigcycle.fa
+2026-10-19 10:09:28,278 [INFO]  END: Building big-cycle FASTA (0.0s)
+2026-10-19 10:09:28,278 [INFO] Pipeline completed successfully
 ```
 
 ## Additional information
 1. [pysam](https://pysam.readthedocs.io/en/latest/api.html)
-2. [argparse](https://docs.python.org/3/library/argparse.html)
-3. [pandas](https://devdocs.io/pandas~0.25/)
-4. [minimap2](https://github.com/lh3/minimap2)
-5. [bsalign](https://github.com/ruanjue/bsalign)
+2. [bsalign](https://github.com/ruanjue/bsalign)
 
 
