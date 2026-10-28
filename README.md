@@ -40,27 +40,37 @@ Amplified-region → graph → cycles → POA pipeline
 
 The input file should be a long-read indexed BAM(PacBio Hifi and Oxford Nanopore) file. The output is a standard VCF file which passed filter. This program was test on a x86_64 Linux system with 40GB physical memory.
 
-## Depencency
+## Dependency
 Dependencies for fec:
 
-* python3(version 3.10.9 or later)
+* python3(version 3.10 or later)
 * pysam(version 0.22.0 or later)
-* argparse(version 1.4.0 or later)
-* pandas(version 2.1.1 or later)
-* minimap2(version 2.24-r1122 or later)
-* bsalign(version 1.2.1 or later)
-* numpy(version 1.26.0 or later)
+* numpy(version 1.23 or later)
+* scipy(version 1.9 or later, for `scipy.optimize.milp`)
+* matplotlib(version 3.5 or later)
+* bsalign(version 1.2.1 or later), must be on PATH; only needed for the consensus step (skip it with `--no_consensus`)
 
-  
+minimap2 and samtools are only needed to prepare the input BAM (see [Use cases](#use-cases)); fec does not call them.
+
 ## Installation
 
 ### Git
 ```
 git clone https://github.com/chiahsuanF/FECc.git
+cd FECc/
+pip install -r requirements.txt
 ```
-Next, add the directory to PATH:
+
+### bsalign
 ```
-export PATH=$PWD/FECc/:$PATH
+git clone https://github.com/ruanjue/bsalign.git
+cd bsalign && make
+export PATH=$PWD:$PATH
+```
+
+Next, add the fec directory to PATH:
+```
+export PATH=/path/to/FECc/:$PATH
 ```
 
 ## General usage
