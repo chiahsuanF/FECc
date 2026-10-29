@@ -63,15 +63,19 @@ export PATH=/path/to/FECc/:$PATH
 ```
 
 ## General usage
-| Option |  |Description| Required|
-|:---------|:-------------|:-------------|:-------------|
+| Option |  |Description| Required|Default|
+|:---------|:-------------|:-------------|:-------------|:-------------|
 |-h |--help|Show this help message and exit||
 |-b |--bam|[STR] Input sorted bam, index required |True|
-|-o |--output_dir|[STR] Name of output directory. Default: fec_output|Fales|
+|-o |--output_dir|[STR] Name of output directory|Fales|fec_output|
 |-r |--reference_genome|[STR] Import reference chromosome genome|True|
 |-ms |--min_support|[INT] Minimum number of support reads for insertion reads|Fales|
-|-d |--depth|[FLOAT]Approximately total depth|Fales|
-|-t |--threads|[INT] Number of CPU threads to use|Fales|
+|-t |--threads|[INT] Number of CPU threads to use|Fales|4|
+|-mc |--max_cycle_len|[INT]Maximum number of fragments allowed in each eccDNA cycle|Fales|20|
+|-mq |--min_mapping_quality|[INT] Minimum read mapping quality for big-cycle region depth; 0 counts multi-mapping reads and inflates depth in repeat regions|Fales|30|
+|--consensus||Build each big cycle's sequence from its reads along the FEC path with bsalign POA |Fales|True|
+|--no_consensus||Skip the consensus step; no summary_bigcycle.fa is written|Fales|Fales|
+|--poa_mode||[STR] bsalign poa -m mode (global or overlap)|Fales|global|
 
 ## Use cases
 fec required input as an aligned BAM file with header. Mapping raw data suggests using minimap2 and samtools. Input reference only needs reference chrM.fa, duplicated sequence and required indexed by using BWA.
