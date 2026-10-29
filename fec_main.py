@@ -15,6 +15,24 @@ from fec_consensus import run_consensus, add_consensus_arguments
 from fec_plot import plot_bigcycles_from_summary
 
 
+# -----------------------
+# Fixed parameters (not exposed on the command line)
+# -----------------------
+DEPTH = None                        # None: approximate total depth is estimated from the BAM
+COPY_TOLERANCE = 0                  # extra region traversals allowed beyond the depth-estimated copy number
+REQUIRE_DEPTH_SUPPORT = False       # drop (instead of only mark) big cycles whose region usage exceeds the copy number
+APPLY_DEPTH_FILTER = True           # hold back cycles that visit a region below the group's depth cutoff
+DEPTH_FILTER_FOLD_GAP = 1.4         # smallest fold gap in sorted region depths usable as the cutoff
+MIN_JUNCTION_SUPPORT = 3            # split reads a segment-end junction needs before a big cycle may use it
+MAX_REGION_EXTENSION = 50000        # furthest (bp) a region edge may be extended to an anchored breakpoint; 0 = off
+JUNCTION_PARTNER_MQ = 0             # MQ the weaker side of a junction split read needs (other side needs 30)
+PARTNER_MQ_MIN_REGION_LEN = 20000   # both joined regions must be at least this long (bp) for JUNCTION_PARTNER_MQ to apply
+MIN_JUNCTION_DEPTH_RATIO = 0        # junction split reads as a fraction of the deeper flanking region's depth; 0 = off
+MIN_PAIR_JUNCTION_RATIO = 0.1       # weak 2-fragment big cycles go to summary_bigcycle_weak_pairs.txt; 0 keeps all
+LOW_MAPPABILITY_DEPTH = False       # use MQ 0 depth for structure in mostly multi-mapped regions
+MIN_VARIANT_DEPTH_RATIO = 0.05      # held-back region re-added as a variant only above this fraction of core depth
+LOW_DEPTH_VARIANTS = True           # add variant big cycles carrying held-back low-depth regions
+
 
 # -----------------------
 # Main
@@ -25,24 +43,10 @@ if __name__=="__main__":
     p.add_argument('-o',"--output_dir", default='./fec_output/', type=str, help='[STR] Name of output directory')
     p.add_argument('-r',"--reference_genome", required=True, type=str, help='[STR] Import reference chromosome genome')
     p.add_argument('-ms',"--min_support", type=int, help='[INT] Minimum number of support reads for insertion reads')
-    p.add_argument('-d',"--depth", type=float, help='[FLOAT]Approximately total depth')
     p.add_argument('-t',"--threads", type=int, default=4, help="[INT] Number of CPU threads to use")
     p.add_argument('-mc',"--max_cycle_len", type=int, default=20, help="[INT] Maximum number of fragments allowed in each eccDNA cycle")
-    p.add_argument('-ct',"--copy_tolerance", type=int, default=0, help="[INT] Extra region traversals allowed beyond the depth-estimated copy number")
-    p.add_argument("--require_depth_support", action="store_true", help="Drop big cycles whose region usage exceeds the depth-estimated copy number, instead of only marking them")
     p.add_argument('-mq',"--min_mapping_quality", type=int, default=30, help="[INT] Minimum read mapping quality for big-cycle region depth; 0 counts multi-mapping reads and inflates depth in repeat regions")
-    p.add_argument("--no_depth_filter", action="store_true", help="Merge every cycle of a group, instead of holding back the cycles that visit a region below the group's depth cutoff")
-    p.add_argument("--depth_filter_fold_gap", type=float, default=1.4, help="[[FLOAT] Smallest fold gap in sorted region depths that may be used as the cutoff; the widest qualifying gap separates the amplified core from the low-depth backgroun")
 
-    p.add_argument('-mjs',"--min_junction_support", type=int, default=3, help="[INT] Split reads a segment-end junction needs before a big cycle may use it")
-    p.add_argument("--max_region_extension", type=int, default=50000, help="[INT] Furthest (bp) a region edge may be extended to a breakpoint that anchored split reads place beyond it; 0 turns extension off")
-    p.add_argument('-jpq',"--junction_partner_mq", type=int, default=0, help="[INT] One side of a junction split read must reach MQ 30; the other side only needs this, so junctions into repeats are kept. Applies only between regions of at least --partner_mq_min_region_len; 30 requires both sides everywhere")
-    p.add_argument("--partner_mq_min_region_len", type=int, default=20000, help="[INT] A junction read unique on one side only is counted only when both regions it joins are at least this long (bp); short pieces need both sides at MQ 30. 0 allows any length")
-    p.add_argument("--min_junction_depth_ratio", type=float, default=0, help="[FLOAT] A big-cycle junction also needs split reads of at least this fraction of the depth of its deeper flanking region; drops few-read chimeric joints in deep amplicons. 0 turns it off")
-    p.add_argument("--min_pair_junction_ratio", type=float, default=0.1, help="[FLOAT] A 2-fragment big cycle whose weaker junction has fewer split reads than this fraction of its median region depth goes to summary_bigcycle_weak_pairs.txt instead; 0 keeps them all")
-    p.add_argument("--low_mappability_depth", action="store_true", help="Use MQ 0 depth for structure in regions where most reads are multi-mapped (MQ >= 30 depth below 0.8x the MQ 0 depth); off by default")
-    p.add_argument("--min_variant_depth_ratio", type=float, default=0.05, help="[FLOAT] A held-back low-depth region is added back as a variant only when its depth is at least this fraction of the median depth of the core regions it joins; 0 adds every one")
-    p.add_argument("--no_low_depth_variants", action="store_true", help="Do not add variant big cycles that carry low-depth regions held back by the depth filter (summary_bigcycle_variants.txt)")
     p.add_argument("--consensus", dest="consensus", action="store_true", default=True, help="Build each big cycle's sequence from its reads along the FEC path with bsalign POA (default)")
     p.add_argument("--no_consensus", dest="consensus", action="store_false", help="Skip the consensus step; no summary_bigcycle.fa is written")
     add_consensus_arguments(p)
@@ -60,7 +64,7 @@ if __name__=="__main__":
     logging.info(f"Starting pipeline for sample {sample}")
 
     # 1) Depth & MinSupport
-    depth, minsupp = estimate_depth_and_minsupp( args.bam, args.min_support, args.depth, args.output_dir, sample)
+    depth, minsupp = estimate_depth_and_minsupp( args.bam, args.min_support, DEPTH, args.output_dir, sample)
     
     # 2) Coarse amplified regions
     regs, amp_thresh, gaps = identify_amplified_regions( args.bam, args.output_dir, sample, threads=args.threads)
@@ -80,21 +84,21 @@ if __name__=="__main__":
     bps = extract_breakpoints( args.bam, args.output_dir, sample)
     
     # 3a) Split regions back at bridged depth dips that carry a junction
-    merged = split_regions_at_junction_gaps( merged, gaps, bps, args.output_dir, sample, min_reads=args.min_junction_support,
-        partner_mq=args.junction_partner_mq)
+    merged = split_regions_at_junction_gaps( merged, gaps, bps, args.output_dir, sample, min_reads=MIN_JUNCTION_SUPPORT,
+        partner_mq=JUNCTION_PARTNER_MQ)
 
     # 3b) Extend regions whose edge stops short of an anchored junction
-    if args.max_region_extension > 0:
-        merged = extend_regions_to_anchored_breakpoints( merged, bps, args.output_dir, sample, min_reads=args.min_junction_support,
-            partner_mq=args.junction_partner_mq, max_extension=args.max_region_extension,
-            partner_min_len=args.partner_mq_min_region_len)
+    if MAX_REGION_EXTENSION > 0:
+        merged = extend_regions_to_anchored_breakpoints( merged, bps, args.output_dir, sample, min_reads=MIN_JUNCTION_SUPPORT,
+            partner_mq=JUNCTION_PARTNER_MQ, max_extension=MAX_REGION_EXTENSION,
+            partner_min_len=PARTNER_MQ_MIN_REGION_LEN)
 
     # 4) Refine on merged regions
-    refined = refine_regions_by_highQ_breakpoints( merged, bps, args.output_dir, sample, window=200000, min_cluster_reads=args.min_junction_support) #120,000
+    refined = refine_regions_by_highQ_breakpoints( merged, bps, args.output_dir, sample, window=200000, min_cluster_reads=MIN_JUNCTION_SUPPORT) #120,000
 
     # 5) Build Junction Graph
-    graph = build_graph(refined, bps, args.bam, args.output_dir, sample, partner_mq=args.junction_partner_mq,
-        partner_min_len=args.partner_mq_min_region_len)
+    graph = build_graph(refined, bps, args.bam, args.output_dir, sample, partner_mq=JUNCTION_PARTNER_MQ,
+        partner_min_len=PARTNER_MQ_MIN_REGION_LEN)
     
     # 6) Detect cycles & write raw coords
     raw_cycles = find_cycles( graph, args.output_dir, sample, max_cycle_len=args.max_cycle_len)
@@ -129,19 +133,19 @@ if __name__=="__main__":
     bam_path=args.bam,
     baseline_depth=depth,
     min_mapping_quality=args.min_mapping_quality,
-    copy_tolerance=args.copy_tolerance,
-    require_depth_support=args.require_depth_support,
-    apply_depth_filter=not args.no_depth_filter,
-    depth_filter_fold_gap=args.depth_filter_fold_gap,
+    copy_tolerance=COPY_TOLERANCE,
+    require_depth_support=REQUIRE_DEPTH_SUPPORT,
+    apply_depth_filter=APPLY_DEPTH_FILTER,
+    depth_filter_fold_gap=DEPTH_FILTER_FOLD_GAP,
     breakpoints=bps,
-    min_junction_support=args.min_junction_support,
-    junction_partner_mapping_quality=args.junction_partner_mq,
-    junction_partner_min_region_len=args.partner_mq_min_region_len,
-    min_pair_junction_ratio=args.min_pair_junction_ratio,
-    min_junction_depth_ratio=args.min_junction_depth_ratio,
-    low_depth_variants=not args.no_low_depth_variants,
-    min_variant_depth_ratio=args.min_variant_depth_ratio,
-    low_mappability_depth=args.low_mappability_depth
+    min_junction_support=MIN_JUNCTION_SUPPORT,
+    junction_partner_mapping_quality=JUNCTION_PARTNER_MQ,
+    junction_partner_min_region_len=PARTNER_MQ_MIN_REGION_LEN,
+    min_pair_junction_ratio=MIN_PAIR_JUNCTION_RATIO,
+    min_junction_depth_ratio=MIN_JUNCTION_DEPTH_RATIO,
+    low_depth_variants=LOW_DEPTH_VARIANTS,
+    min_variant_depth_ratio=MIN_VARIANT_DEPTH_RATIO,
+    low_mappability_depth=LOW_MAPPABILITY_DEPTH
 )
     bigcycle_plot_dir = os.path.join(
     args.output_dir,
