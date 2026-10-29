@@ -4,10 +4,19 @@ import argparse, os, sys, shutil, logging, subprocess, pysam
 from concurrent.futures import ThreadPoolExecutor
 from fec_login import *
 
+# -----------------------
+# Consensus sequence per big cycle (run after FEC)
+# Reads are cut at reference coordinates from their existing BAM
+# alignments (primary + supplementary) in windows along the circle,
+# and each window is collapsed with bsalign POA. Window cuts sit inside
+# segments, so every junction (also the closing one) is inside a window.
+# Only external tool: bsalign.
+# -----------------------
+
 COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
 
-REF_OPS = {0, 2, 3, 7, 8}     
-QUERY_OPS = {0, 1, 4, 7, 8}    
+REF_OPS = {0, 2, 3, 7, 8}      # M D N = X consume reference
+QUERY_OPS = {0, 1, 4, 7, 8}    # M I S = X consume query
 
 
 def revcomp(seq):
@@ -15,6 +24,15 @@ def revcomp(seq):
 
 
 def parse_node(node):
+    """
+    Convert
+
+        chr2:100-200+
+
+    into
+
+        ("chr2", 100, 200, "+")
+    """
 
     node = node.strip()
 
@@ -25,6 +43,14 @@ def parse_node(node):
 
 
 def parse_breakpoint(text):
+    """
+    "chrom:position" (1-based, as alignment_breakpoint writes it) ->
+    (chrom, 0-based coordinate of the cut), or None for "NA".
+
+    A left-clipped alignment starts at the breakpoint, a right-clipped
+    one ends just before it, so both cut at position - 1 in 0-based,
+    end-exclusive coordinates.
+    """
 
     text = text.strip()
 
@@ -40,6 +66,19 @@ def parse_breakpoint(text):
 
 
 def trim_to_breakpoints(bigcycle_id, nodes, a_side, b_side, max_trim):
+    """
+    Move each segment's entry and exit to the exact junction breakpoints.
+
+    Junction reads stop at the true breakpoint, which can sit a few bp
+    from the region end; a read that does not reach the region end does
+    not fit the window and is dropped. A breakpoint is used only when it
+    lies within max_trim of its own end of the region and nearer that
+    end than the other one, and the segment keeps a positive length;
+    otherwise the region end is kept.
+
+    a_side[i] is the breakpoint where node i is left, b_side[i] where
+    node i + 1 is entered (the last step closes the circle).
+    """
 
     if len(a_side) != len(nodes) or len(b_side) != len(nodes):
         return nodes
@@ -55,6 +94,8 @@ def trim_to_breakpoints(bigcycle_id, nodes, a_side, b_side, max_trim):
 
         lo, hi = start, end
 
+        # + is entered at its left end and left at its right end; - the
+        # other way round
         left, right = (entry, exit_) if strand == "+" else (exit_, entry)
 
         for side, point in (("left", left), ("right", right)):
@@ -93,6 +134,13 @@ def trim_to_breakpoints(bigcycle_id, nodes, a_side, b_side, max_trim):
 
 
 def read_cycles(summary_bigcycle_file, ids=None, max_trim=500):
+    """
+    Return [(bigcycle_id, [node, ...])] in file order. The path keeps
+    order and strand; a final node repeating the first is dropped. With
+    the A_breakpoint and B_breakpoint columns present, each node is cut
+    at its exact breakpoints (trim_to_breakpoints); max_trim 0 keeps the
+    region ends.
+    """
 
     cycles = []
 
@@ -158,6 +206,10 @@ def read_cycles(summary_bigcycle_file, ids=None, max_trim=500):
 # -----------------------
 
 def build_segments(nodes):
+    """
+    [(chrom, ref_start, ref_end, strand, t_start, t_end)] where t is the
+    position on the circular template (length = sum of segment lengths).
+    """
 
     segments = []
     t = 0
@@ -173,6 +225,10 @@ def build_segments(nodes):
 
 
 def template_to_pieces(t_start, length, segments):
+    """
+    Reference pieces [(chrom, lo, hi, strand)] in template order for the
+    circular template interval [t_start, t_start + length).
+    """
 
     total = segments[-1][5]
     pieces = []
@@ -202,6 +258,11 @@ def template_to_pieces(t_start, length, segments):
 
 
 def make_cuts(segments, window):
+    """
+    Window cut points on the template, only inside segments: a segment
+    >= window gets cuts window/2 from each end and evenly in between
+    (at most window apart); a shorter one gets a cut at its middle.
+    """
 
     cuts = []
     half = window // 2
@@ -221,7 +282,7 @@ def make_cuts(segments, window):
         last = t1 - half
         span = last - first
 
-        k = -(-span // window)   
+        k = -(-span // window)   # ceil
 
         if k == 0:
             cuts.append(first)
@@ -232,6 +293,10 @@ def make_cuts(segments, window):
 
 
 def make_windows(segments, window):
+    """
+    [(t_start, length)] between consecutive cuts, the last one wrapping
+    around the end of the template.
+    """
 
     total = segments[-1][5]
     cuts = make_cuts(segments, window)
@@ -251,6 +316,10 @@ def make_windows(segments, window):
 
 
 def junction_windows(segments, windows):
+    """
+    [(junction label, window index)]: the window holding each junction
+    (segment end -> next segment start; the last one closes the circle).
+    """
 
     total = segments[-1][5]
     result = []
@@ -282,6 +351,10 @@ def junction_windows(segments, windows):
 # -----------------------
 
 def query_cut(rec, ref_x):
+    """
+    Cut point in the forward read (hard clips included) at reference
+    position ref_x, or None if ref_x is outside the alignment.
+    """
 
     if ref_x < rec.reference_start or ref_x > rec.reference_end:
         return None
@@ -292,7 +365,7 @@ def query_cut(rec, ref_x):
 
     for op, length in rec.cigartuples:
 
-        if op == 5:                   
+        if op == 5:                     # hard clip
             q += length
             continue
 
@@ -308,10 +381,15 @@ def query_cut(rec, ref_x):
     if found is None:
         found = q
 
+    # q is now the full read length
     return q - found if rec.is_reverse else found
 
 
 def forward_slice(records, lo, hi):
+    """
+    Forward-read bases [lo, hi) taken from any record whose stored
+    sequence (hard clips excluded) covers them, or None.
+    """
 
     for rec in records:
 
@@ -322,6 +400,7 @@ def forward_slice(records, lo, hi):
         left = cigar[0][1] if cigar[0][0] == 5 else 0
         right = cigar[-1][1] if cigar[-1][0] == 5 else 0
 
+        # hard clip at the start of the forward read
         offset = right if rec.is_reverse else left
 
         seq = rec.get_forward_sequence()
@@ -333,6 +412,11 @@ def forward_slice(records, lo, hi):
 
 
 def read_piece(records, pieces, max_gap):
+    """
+    The part of one read that runs through all pieces in template order,
+    oriented like the template, or None if the read does not fit.
+    records: all alignments of this read overlapping the pieces.
+    """
 
     cuts = []
     orientation = None
@@ -410,6 +494,9 @@ def reference_sequence(ref, pieces):
 
 
 def run_poa(reads_fa, out_fa, mode):
+    """
+    bsalign POA consensus of the reads in reads_fa; returns the sequence.
+    """
 
     cmd = [
         "bsalign", "poa",
@@ -432,7 +519,9 @@ def run_poa(reads_fa, out_fa, mode):
 
 def consensus_window(index, t_start, length, segments, bam_path, ref_fasta,
                      workdir, opts):
-
+    """
+    Consensus of one window. Returns a dict for windows.tsv.
+    """
 
     pieces = template_to_pieces(t_start, length, segments)
 
@@ -609,6 +698,12 @@ def consensus_cycle(bigcycle_id, nodes, bam_path, ref_fasta, outdir, opts):
 # -----------------------
 
 def run_consensus(summary_file, bam_path, ref_fasta, outdir, opts, ids=None):
+    """
+    Consensus of every big cycle in summary_file, written to
+    consensus_bigcycle.fa and consensus_summary.tsv in outdir.
+    opts needs window, max_reads, min_reads, min_mapq, max_junction_gap,
+    poa_mode, threads and max_breakpoint_trim. Returns the results.
+    """
 
     t0 = tic("Consensus sequence of big cycles")
 
@@ -651,15 +746,24 @@ def run_consensus(summary_file, bam_path, ref_fasta, outdir, opts, ids=None):
     return results
 
 
-def add_consensus_arguments(parser, prefix="consensus_"):
+# Fixed consensus parameters (not exposed on the command line)
+WINDOW = 2000               # consensus window length in bp
+MAX_READS = 30              # reads per window given to bsalign poa (highest MAPQ first)
+MIN_READS = 3               # fewer fitting reads -> the window keeps the reference sequence
+MIN_MAPQ = 0                # ignore alignments below this MAPQ in the consensus
+MAX_JUNCTION_GAP = 2000     # largest read stretch allowed between two pieces of a window
+MAX_BREAKPOINT_TRIM = 500   # cut a segment at its junction breakpoint within this many bp of the region end; 0 keeps the region ends
 
-    parser.add_argument(f"--{prefix}window", dest="window", type=int, default=2000, help="[INT] Consensus window length in bp")
-    parser.add_argument(f"--{prefix}max_reads", dest="max_reads", type=int, default=30, help="[INT] Reads per window given to bsalign poa (highest MAPQ first)")
-    parser.add_argument(f"--{prefix}min_reads", dest="min_reads", type=int, default=3, help="[INT] Fewer fitting reads -> the window keeps the reference sequence")
-    parser.add_argument(f"--{prefix}min_mapq", dest="min_mapq", type=int, default=0, help="[INT] Ignore alignments below this MAPQ in the consensus")
-    parser.add_argument("--max_junction_gap", type=int, default=2000, help="[INT] Largest read stretch allowed between two pieces of a window (extra sequence at a junction)")
+
+def add_consensus_arguments(parser, prefix="consensus_"):
+    """
+    The consensus options, shared by this script and fec_main.py. Only
+    --poa_mode is user-adjustable; the fixed parameters above are set as
+    parser defaults so opts can still be the parsed arguments.
+    """
     parser.add_argument("--poa_mode", type=str, default="global", help="[STR] bsalign poa -m mode (global or overlap)")
-    parser.add_argument("--max_breakpoint_trim", type=int, default=500, help="[INT] Cut each segment at its exact junction breakpoint when it lies within this many bp of the region end; 0 keeps the region ends")
+    parser.set_defaults(window=WINDOW, max_reads=MAX_READS, min_reads=MIN_READS, min_mapq=MIN_MAPQ,
+        max_junction_gap=MAX_JUNCTION_GAP, max_breakpoint_trim=MAX_BREAKPOINT_TRIM)
 
 
 # -----------------------
