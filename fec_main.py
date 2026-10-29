@@ -16,22 +16,21 @@ from fec_plot import plot_bigcycles_from_summary
 
 
 # -----------------------
-# Fixed parameters (not exposed on the command line)
-# -----------------------
-DEPTH = None                        # None: approximate total depth is estimated from the BAM
-COPY_TOLERANCE = 0                  # extra region traversals allowed beyond the depth-estimated copy number
-REQUIRE_DEPTH_SUPPORT = False       # drop (instead of only mark) big cycles whose region usage exceeds the copy number
-APPLY_DEPTH_FILTER = True           # hold back cycles that visit a region below the group's depth cutoff
-DEPTH_FILTER_FOLD_GAP = 1.4         # smallest fold gap in sorted region depths usable as the cutoff
-MIN_JUNCTION_SUPPORT = 3            # split reads a segment-end junction needs before a big cycle may use it
-MAX_REGION_EXTENSION = 50000        # furthest (bp) a region edge may be extended to an anchored breakpoint; 0 = off
-JUNCTION_PARTNER_MQ = 0             # MQ the weaker side of a junction split read needs (other side needs 30)
-PARTNER_MQ_MIN_REGION_LEN = 20000   # both joined regions must be at least this long (bp) for JUNCTION_PARTNER_MQ to apply
-MIN_JUNCTION_DEPTH_RATIO = 0        # junction split reads as a fraction of the deeper flanking region's depth; 0 = off
-MIN_PAIR_JUNCTION_RATIO = 0.1       # weak 2-fragment big cycles go to summary_bigcycle_weak_pairs.txt; 0 keeps all
-LOW_MAPPABILITY_DEPTH = False       # use MQ 0 depth for structure in mostly multi-mapped regions
-MIN_VARIANT_DEPTH_RATIO = 0.05      # held-back region re-added as a variant only above this fraction of core depth
-LOW_DEPTH_VARIANTS = True           # add variant big cycles carrying held-back low-depth regions
+
+DEPTH = None                        
+COPY_TOLERANCE = 0                  
+REQUIRE_DEPTH_SUPPORT = False       
+APPLY_DEPTH_FILTER = True           
+DEPTH_FILTER_FOLD_GAP = 1.4         
+MIN_JUNCTION_SUPPORT = 3             
+MAX_REGION_EXTENSION = 50000        
+JUNCTION_PARTNER_MQ = 0              
+PARTNER_MQ_MIN_REGION_LEN = 20000    
+MIN_JUNCTION_DEPTH_RATIO = 0         
+MIN_PAIR_JUNCTION_RATIO = 0.1        
+LOW_MAPPABILITY_DEPTH = False        
+MIN_VARIANT_DEPTH_RATIO = 0.05       
+LOW_DEPTH_VARIANTS = True           
 
 
 # -----------------------
